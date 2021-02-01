@@ -30,7 +30,7 @@ npm start
 
 By default, this app listens to port 1234 on all network devices, so you should be able to reach it
 from other computers. If you want to change the host or port of the listener, you can set
-global variables `LISTEN_PORT`.
+environment variable `LISTEN_PORT`.
 
 If ZoomOSC is listening to a different port than the default 9090, or on a different host machine,
 you can set `ZOOMOSC_HOST` and `ZOOMOSC_PORT`.
