@@ -2,7 +2,7 @@ import * as OSC from 'osc-js';
 
 // OSC server (port to listen to ZoomOSC and clients)
 // Our Listener
-const zoomInPort = process.env.LISTEN_PORT || 1235;
+const zoomInPort = process.env.LISTEN_PORT || 1234;
 
 // Our sender (ZoomOSC listener)
 const zoomOutHost = process.env.ZOOMOSC_HOST || 'localhost';
@@ -37,7 +37,7 @@ run()
 async function run() {
     setupOscListeners();
     osc.open();
-    console.log(`Listening to ${osc.options.plugin.options.open.host}:${osc.options.plugin.options.open.port}`);
+    console.log(`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
 
     await sendToZoom('/zoom/subscribe', 2);
 }
@@ -86,7 +86,7 @@ function handleZoomOSCMessage(message: ZoomOSCMessage) {
 
     console.log("handleZoomOSCMessage addressParts", addressParts);
 
-    switch(addressParts[3]) {
+    switch (addressParts[3]) {
         case 'chat':
             handleChatMessage(message);
     }
@@ -94,24 +94,31 @@ function handleZoomOSCMessage(message: ZoomOSCMessage) {
 
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
-    console.log("chatMessage", chatMessage);
     if (chatMessage[0] === '/') {
         // slash-command, do something with it
+
         const params = parseParams(chatMessage);
         console.log("args", params);
+        switch (params[0]) {
+            case '/mx': // mute all except
+                sendToZoom('/zoom/allExcept/userName/mute', params[1]);
+                break;
+            case '/ua': // unmute all
+                sendToZoom('/zoom/all/unMute');
+                break;
+            case '/ma': // mute all
+                sendToZoom('/zoom/all/mute');
+                break;
+        }
     }
 }
 
 function parseParams(str: string): string[] {
-    console.log("convert", str);
-    const result =
-        (str
-            .replace(/[\u2018\u2019]/g, "'")
-            .replace(/[\u201C\u201D]/g, '"')
-            .match(/[^\s"]+|"([^"]*)"/gi) || []).map((word) =>
-            word.replace(/^"(.+(?="$))"$/, '$1'))
-    console.log("result", result);
-    return result;
+    return (str
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/[\u201C\u201D]/g, '"')
+        .match(/[^\s"]+|"([^"]*)"/gi) || []).map((word) =>
+        word.replace(/^"(.+(?="$))"$/, '$1'));
 }
 
 function setupOscListeners() {
