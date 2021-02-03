@@ -23,10 +23,34 @@ const osc = new OSC({
     plugin: new OSC.DatagramPlugin(udpOptions)
 });
 
-const state: any = {
+interface RoomState {
+    count: number;
+    names: Map<string, number>;
+    leaders: number[];
+    everyone: Map<number, PersonState>;
+}
+
+interface PersonState {
+    zoomID: number;
+    userName: string;
+    audioOn: boolean;
+    videoOn: boolean;
+}
+
+interface ZoomOSCMessage {
+    address: string;
+    targetID: number;
+    userName: string;
+    galIndex: number;
+    zoomID: number;
+    params: string;
+}
+
+const state: RoomState = {
     count: 0,
-    order: [],
-    participants: []
+    names: new Map<string, number>(),
+    leaders: [],
+    everyone: new Map<number, PersonState>()
 }
 
 run()
@@ -49,15 +73,6 @@ async function sendToZoom(message: string, ...args: any[]): Promise<any> {
     } catch (e) {
         console.error("Failed to sendToZoom", e);
     }
-}
-
-interface ZoomOSCMessage {
-    address: string;
-    targetID: number;
-    userName: string;
-    galIndex: number;
-    zoomID: number;
-    params: string;
 }
 
 function parseZoomOSCMessage(message) {
@@ -97,7 +112,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
     if (chatMessage[0] === '/') {
         // slash-command, do something with it
 
-        const params = parseParams(chatMessage);
+        const params = parseChatParams(chatMessage);
         console.log("args", params);
         switch (params[0]) {
             case '/mx': // mute all except
@@ -113,7 +128,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 }
 
-function parseParams(str: string): string[] {
+function parseChatParams(str: string): string[] {
     return (str
         .replace(/[\u2018\u2019]/g, "'")
         .replace(/[\u201C\u201D]/g, '"')
@@ -121,8 +136,40 @@ function parseParams(str: string): string[] {
         word.replace(/^"(.+(?="$))"$/, '$1'));
 }
 
+function handleUnmute(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    person.audioOn = true;
+}
+
+function handleMute(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    person.audioOn = false;
+}
+
+function handleVideoOn(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    person.videoOn = true;
+}
+
+function handleVideoOff(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    person.videoOn = false;
+}
+
+function handleList(message: ZoomOSCMessage) {
+    let person: PersonState = state.everyone.get(message.zoomID);
+    if (!person) {
+        person = {
+            zoomID: message.zoomID,
+            userName: message.userName,
+            audioOn: Boolean(message.params[5]),
+            videoOn: Boolean(message.params[4])
+        }
+    }
+    state.everyone.set(person.zoomID, person);
+}
+
 function setupOscListeners() {
-    console.log("config", state);
 
     // osc.on('*', message => {
     //     console.log("OSC * Message", message)
@@ -135,8 +182,11 @@ function setupOscListeners() {
 
     // osc.on('/zoomosc/audioStatus', async message => console.log("/zoomosc/audioStatus", message.args));
     //
-    // osc.on('/zoomosc/unMute', async message => console.log("/zoomosc/unMute", message.args));
-    // osc.on('/zoomosc/mute', async message => console.log("/zoomosc/mute", message.args));
+    osc.on('/zoomosc/user/unMute', async message => handleUnmute(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/mute', async message => handleMute(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/videoOn', async message => handleVideoOn(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
     //
     // osc.on('/zoomosc/galleryOrder', async message => console.log("/zoomosc/galleryOrder", message.args));
     // osc.on('/zoomosc/galleryCount', async message => console.log("/zoomosc/galleryCount", message.args));
