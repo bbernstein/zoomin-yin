@@ -23,6 +23,9 @@ const osc = new OSC({
     plugin: new OSC.DatagramPlugin(udpOptions)
 });
 
+const HOST = 1;
+const COHOST = 2;
+
 interface RoomState {
     count: number;
     names: Map<string, number>;
@@ -33,6 +36,7 @@ interface RoomState {
 interface PersonState {
     zoomID: number;
     userName: string;
+    userRole: number;
     audioOn: boolean;
     videoOn: boolean;
 }
@@ -63,10 +67,11 @@ async function run() {
     osc.open();
     console.log(`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
 
-    await sendToZoom('/zoom/subscribe', 2);
+    sendToZoom('/zoom/subscribe', 2);
+    sendToZoom('/zoom/list');    // Fetch the current list of users
 }
 
-async function sendToZoom(message: string, ...args: any[]): Promise<any> {
+function sendToZoom(message: string, ...args: any[]) {
     console.log("Sending to Zoom: %s, %s", message, args);
     try {
         osc.send(new OSC.Message(message, ...args));
@@ -90,23 +95,6 @@ function parseZoomOSCMessage(message) {
     }
 }
 
-// noinspection JSUnusedLocalSymbols
-function handleZoomOSCMessage(message: ZoomOSCMessage) {
-    console.log("handleZoomOSCMessage:", message);
-
-    const addressParts = message.address.split('/');
-    if (addressParts.length < 4) {
-        return;
-    }
-
-    console.log("handleZoomOSCMessage addressParts", addressParts);
-
-    switch (addressParts[3]) {
-        case 'chat':
-            handleChatMessage(message);
-    }
-}
-
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
     if (chatMessage[0] === '/') {
@@ -115,8 +103,8 @@ function handleChatMessage(message: ZoomOSCMessage) {
         const params = parseChatParams(chatMessage);
         console.log("args", params);
         switch (params[0]) {
-            case '/mx': // mute all except
-                sendToZoom('/zoom/allExcept/userName/mute', params[1]);
+            case '/mx':  // mute all except leaders
+                muteNonLeaders();
                 break;
             case '/ua': // unmute all
                 sendToZoom('/zoom/all/unMute');
@@ -124,8 +112,44 @@ function handleChatMessage(message: ZoomOSCMessage) {
             case '/ma': // mute all
                 sendToZoom('/zoom/all/mute');
                 break;
+            case '/la': // leader
+                addLeader(params[1]);
+                break;
+            case '/list': // list all users
+                sendToZoom('/zoom/list');
+                break;
+            case '/state':
+                console.log("handleChatMessage state", state);
+                break;
+
         }
     }
+}
+
+function getPersonFromName(name: string) {
+    const id = state.names.get(name);
+    if (!id) return undefined;
+    return state.everyone.get(id);
+}
+
+function addLeader(name: string) {
+    const newLeader: PersonState = getPersonFromName(name);
+    if (!newLeader) return;
+    if (state.leaders.includes(newLeader.zoomID)) return;       // already there as a leader
+    state.leaders.push(newLeader.zoomID);
+
+    console.log("Leaders:", state.leaders);
+}
+
+function muteNonLeaders() {
+    if (state.leaders.length === 0) {
+        // no leaders, mute everyone
+        sendToZoom('/zoom/all/mute');
+        return;
+    }
+
+    // mute all but the leaders
+    sendToZoom('/zoom/allExcept/zoomID/mute', ...state.leaders);
 }
 
 function parseChatParams(str: string): string[] {
@@ -156,17 +180,26 @@ function handleVideoOff(message: ZoomOSCMessage) {
     person.videoOn = false;
 }
 
+function handleRoleChanged(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    person.userRole = Number(message.params[2]);
+}
+
 function handleList(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
+
     if (!person) {
         person = {
             zoomID: message.zoomID,
             userName: message.userName,
+            userRole: Number(message.params[2]),
             audioOn: Boolean(message.params[5]),
             videoOn: Boolean(message.params[4])
         }
     }
     state.everyone.set(person.zoomID, person);
+    state.names.set(message.userName, message.zoomID);
+    state.count++;
 }
 
 function setupOscListeners() {
@@ -176,18 +209,13 @@ function setupOscListeners() {
     // });
 
     osc.on('/zoomosc/user/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
-
-    // osc.on('/zoomosc/user/*', async message => handleZoomOSCMessage(parseZoomOSCMessage(message)));
-    // osc.on('/zoomosc/me/*', async message => handleZoomOSCMessage(parseZoomOSCMessage(message)));
-
-    // osc.on('/zoomosc/audioStatus', async message => console.log("/zoomosc/audioStatus", message.args));
-    //
     osc.on('/zoomosc/user/unMute', async message => handleUnmute(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/mute', async message => handleMute(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/videoOn', async message => handleVideoOn(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
-    //
+
     // osc.on('/zoomosc/galleryOrder', async message => console.log("/zoomosc/galleryOrder", message.args));
     // osc.on('/zoomosc/galleryCount', async message => console.log("/zoomosc/galleryCount", message.args));
     // osc.on('/zoomosc/galleryShape', async message => console.log("/zoomosc/galleryShape", message.args));
