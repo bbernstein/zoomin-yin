@@ -27,7 +27,6 @@ const HOST = 1;
 const COHOST = 2;
 
 interface RoomState {
-    count: number;
     names: Map<string, number>;
     leaders: number[];
     everyone: Map<number, PersonState>;
@@ -51,7 +50,6 @@ interface ZoomOSCMessage {
 }
 
 const state: RoomState = {
-    count: 0,
     names: new Map<string, number>(),
     leaders: [],
     everyone: new Map<number, PersonState>()
@@ -196,10 +194,14 @@ function handleList(message: ZoomOSCMessage) {
             audioOn: Boolean(message.params[5]),
             videoOn: Boolean(message.params[4])
         }
+        state.everyone.set(person.zoomID, person);
+    } else {
+        person.userName = message.userName;
+        person.userRole = Number(message.params[2]);
+        person.audioOn = Boolean(message.params[5]);
+        person.videoOn = Boolean(message.params[4]);
     }
-    state.everyone.set(person.zoomID, person);
     state.names.set(message.userName, message.zoomID);
-    state.count++;
 }
 
 function setupOscListeners() {
