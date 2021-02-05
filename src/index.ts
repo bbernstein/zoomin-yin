@@ -95,7 +95,7 @@ function parseZoomOSCMessage(message) {
 
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
-    if (chatMessage[0] === '/') {
+    if (chatMessage[0].startsWith('/')) {
         // slash-command, do something with it
         //if (!amHost(message.zoomID)) {
         //	return;
