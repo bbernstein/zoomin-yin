@@ -81,7 +81,7 @@ function sendToZoom(message: string, ...args: any[]) {
 function parseZoomOSCMessage(message) {
     console.log("raw message:", message);
 
-    const [address, targetID, userName, galIndex, zoomID, params] = [message.address, ...message.args];
+    const [address, targetID, userName, galIndex, zoomID, params] = [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
 
     return {
         address: address,
@@ -97,6 +97,9 @@ function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
     if (chatMessage[0] === '/') {
         // slash-command, do something with it
+        //if (!amHost(message.zoomID)) {
+        //	return;
+        //}
 
         const params = parseChatParams(chatMessage);
         console.log("args", params);
@@ -110,8 +113,8 @@ function handleChatMessage(message: ZoomOSCMessage) {
             case '/ma': // mute all
                 sendToZoom('/zoom/all/mute');
                 break;
-            case '/la': // leader
-                addLeader(params[1]);
+            case '/l': // leader
+                manageLeader(message, params);
                 break;
             case '/list': // list all users
                 sendToZoom('/zoom/list');
@@ -119,7 +122,9 @@ function handleChatMessage(message: ZoomOSCMessage) {
             case '/state':
                 console.log("handleChatMessage state", state);
                 break;
-
+            default:
+                console.log("handleChatMessage Error: Unimplemented Chat Command");
+                sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
         }
     }
 }
@@ -130,13 +135,62 @@ function getPersonFromName(name: string) {
     return state.everyone.get(id);
 }
 
+function replaceLeader(name: string) {
+    const newLeader: PersonState = getPersonFromName(name);
+    if (!newLeader) return;
+    state.leaders = [newLeader.zoomID];
+}
+
 function addLeader(name: string) {
     const newLeader: PersonState = getPersonFromName(name);
     if (!newLeader) return;
     if (state.leaders.includes(newLeader.zoomID)) return;       // already there as a leader
     state.leaders.push(newLeader.zoomID);
+}
 
-    console.log("Leaders:", state.leaders);
+function removeLeader(name: string) {
+    const newLeader: PersonState = getPersonFromName(name);
+    if (!newLeader) return;
+    if (state.leaders.includes(newLeader.zoomID)){      // already there as a leader
+        state.leaders.splice(state.leaders.findIndex(element => element == newLeader.zoomID),1);
+    }
+}
+
+function displayLeaders(zoomid: number, leaders: number[]) {
+    var person: PersonState;
+    var buffer;
+
+    buffer = "Leaders: None Specified";
+
+    for (let i = 0; i < leaders.length; i++) {
+        const person = state.everyone.get(leaders[i]);
+        if (i == 0) {
+            buffer = "Leaders: " + person.userName;
+        } else {
+            buffer = buffer.concat(", ", person.userName);
+        }
+    }
+    console.log("manageLeader", buffer);
+    sendToZoom('/zoom/zoomID/chat', zoomid, buffer);
+}
+
+function manageLeader(message: ZoomOSCMessage, params: string[]) {
+    console.log("manageLeader", params);
+    if (params[1]) {
+        switch (params[1]) {
+            case '+':  // add leader
+                addLeader(params[2]);
+                console.log("manageLeader case +", params);
+                break;
+            case '-':  // remove leader
+                removeLeader(params[2]);
+                break;
+            default:   // replace leader
+                replaceLeader(params[1]);
+        }
+    }
+
+    displayLeaders(message.zoomID, state.leaders);
 }
 
 function muteNonLeaders() {
@@ -148,6 +202,7 @@ function muteNonLeaders() {
 
     // mute all but the leaders
     sendToZoom('/zoom/allExcept/zoomID/mute', ...state.leaders);
+    sendToZoom('/zoom/zoomID/unMute', ...state.leaders);
 }
 
 function parseChatParams(str: string): string[] {
@@ -185,7 +240,6 @@ function handleRoleChanged(message: ZoomOSCMessage) {
 
 function handleList(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
-
     if (!person) {
         person = {
             zoomID: message.zoomID,
@@ -217,6 +271,8 @@ function setupOscListeners() {
     osc.on('/zoomosc/user/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
+
+    // osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
 
     // osc.on('/zoomosc/galleryOrder', async message => console.log("/zoomosc/galleryOrder", message.args));
     // osc.on('/zoomosc/galleryCount', async message => console.log("/zoomosc/galleryCount", message.args));
