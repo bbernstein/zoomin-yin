@@ -96,10 +96,13 @@ function parseZoomOSCMessage(message) {
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
     if (chatMessage[0].startsWith('/')) {
+
+        if (!isHost(message.zoomID)) {
+            sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
+            return;
+        }
+
         // slash-command, do something with it
-        //if (!amHost(message.zoomID)) {
-        //	return;
-        //}
 
         const params = parseChatParams(chatMessage);
         console.log("args", params);
@@ -127,6 +130,12 @@ function handleChatMessage(message: ZoomOSCMessage) {
                 sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
         }
     }
+}
+
+function isHost(zoomid: number) {
+    const person = state.everyone.get(zoomid);
+    console.log("handleisHost person", person);
+    return (person.userRole == HOST) || (person.userRole == COHOST);
 }
 
 function getPersonFromName(name: string) {
@@ -200,13 +209,33 @@ function muteNonLeaders() {
         return;
     }
 
-    // mute all but the leaders
+    // mute all but the leaders - Note: This doesn't appear to work with a list of users
+    // unmute leaders only if muted - Note: ZoomOSC throws error when unmuting an already unmuted user
+
     sendToZoom('/zoom/allExcept/zoomID/mute', ...state.leaders);
-    sendToZoom('/zoom/zoomID/unMute', ...state.leaders);
+    /*
+    for (let zoomid of state.leaders) {
+        var person = state.everyone.get(zoomid);
+        if (!person.audioOn) {
+            sendToZoom('/zoom/zoomID/unMute', zoomid);
+        }
+    }
+    */
+
+    // if above doesn't work, do this instead
+    // Hack: For now mute all followed by unmuting the leaders.
+    // sendToZoom('/zoom/all/mute');
+
+    // Note: Not sure how to pass a list of zoomID's to OSC
+    // sendToZoom('/zoom/users/zoomID/unMute', ...state.leaders);
+    // for (let zoomid of state.leaders) {
+    //     var person = state.everyone.get(zoomid);
+    //     sendToZoom('/zoom/zoomID/unMute', zoomid);
+    // }
 }
 
 function parseChatParams(str: string): string[] {
-    return (str
+    return str && (String(str)
         .replace(/[\u2018\u2019]/g, "'")
         .replace(/[\u201C\u201D]/g, '"')
         .match(/[^\s"]+|"([^"]*)"/gi) || []).map((word) =>
@@ -216,26 +245,31 @@ function parseChatParams(str: string): string[] {
 function handleUnmute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     person.audioOn = true;
+    // console.log("handleUnmute message, person", message, person);
 }
 
 function handleMute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     person.audioOn = false;
+    // console.log("handleMute message, person", message, person);
 }
 
 function handleVideoOn(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     person.videoOn = true;
+    // console.log("handleVideoOn message, person", message, person);
 }
 
 function handleVideoOff(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     person.videoOn = false;
+    // console.log("handleVideoOff message, person", message, person);
 }
 
 function handleRoleChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
-    person.userRole = Number(message.params[2]);
+    person.userRole = Number(message.params[0]);
+    // console.log("handleRoleChanged message, person", message, person);
 }
 
 function handleList(message: ZoomOSCMessage) {
@@ -272,7 +306,13 @@ function setupOscListeners() {
     osc.on('/zoomosc/user/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
 
-    // osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/unMute', async message => handleUnmute(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/mute', async message => handleMute(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/videoOn', async message => handleVideoOn(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/list', async message => handleList(parseZoomOSCMessage(message)));
 
     // osc.on('/zoomosc/galleryOrder', async message => console.log("/zoomosc/galleryOrder", message.args));
     // osc.on('/zoomosc/galleryCount', async message => console.log("/zoomosc/galleryCount", message.args));
