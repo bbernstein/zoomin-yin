@@ -166,7 +166,6 @@ function removeLeader(name: string) {
 }
 
 function displayLeaders(zoomid: number, leaders: number[]) {
-    var person: PersonState;
     var buffer;
 
     buffer = "Leaders: None Specified";
@@ -209,29 +208,9 @@ function muteNonLeaders() {
         return;
     }
 
-    // mute all but the leaders - Note: This doesn't appear to work with a list of users
-    // unmute leaders only if muted - Note: ZoomOSC throws error when unmuting an already unmuted user
-
+    // Unmute the leaders then mute everyone else
+    sendToZoom('/zoom/users/zoomID/unMute', ...state.leaders);
     sendToZoom('/zoom/allExcept/zoomID/mute', ...state.leaders);
-    /*
-    for (let zoomid of state.leaders) {
-        var person = state.everyone.get(zoomid);
-        if (!person.audioOn) {
-            sendToZoom('/zoom/zoomID/unMute', zoomid);
-        }
-    }
-    */
-
-    // if above doesn't work, do this instead
-    // Hack: For now mute all followed by unmuting the leaders.
-    // sendToZoom('/zoom/all/mute');
-
-    // Note: Not sure how to pass a list of zoomID's to OSC
-    // sendToZoom('/zoom/users/zoomID/unMute', ...state.leaders);
-    // for (let zoomid of state.leaders) {
-    //     var person = state.everyone.get(zoomid);
-    //     sendToZoom('/zoom/zoomID/unMute', zoomid);
-    // }
 }
 
 function parseChatParams(str: string): string[] {
