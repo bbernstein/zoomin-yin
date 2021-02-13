@@ -53,7 +53,7 @@ With no parameters, it just lists current leaders.
 /l
 ```
 
-With a name given (in quotes if multiple words) it adds tha tuser to the leader list.
+With a name given (in quotes if multiple words) it adds that user to the leader list.
 ```
 /l <username>
 ```
@@ -72,3 +72,7 @@ With a name given (in quotes if multiple words) it adds tha tuser to the leader 
 ```
 /ma
 ```
+
+## Written by
+
+Brian Lefsky and Bernie Bernstein
