@@ -26,12 +26,19 @@ const osc = new OSC({
 const HOST = 1;
 const COHOST = 2;
 
+// The definition of the current state of the room
 interface RoomState {
+    // mapping names to their zoomIDs
     names: Map<string, number>;
+
+    // who are the room "leaders" (people excluded from muting)
     leaders: number[];
+
+    // everyone's state
     everyone: Map<number, PersonState>;
 }
 
+// What we keep track of for each person
 interface PersonState {
     zoomID: number;
     userName: string;
@@ -40,6 +47,7 @@ interface PersonState {
     videoOn: boolean;
 }
 
+// The ZoomOSC incoming user message with params broken out
 interface ZoomOSCMessage {
     address: string;
     targetID: number;
@@ -49,24 +57,33 @@ interface ZoomOSCMessage {
     params: string;
 }
 
+// The value of the room state
 const state: RoomState = {
     names: new Map<string, number>(),
     leaders: [],
     everyone: new Map<number, PersonState>()
 }
 
+// get this thing started
 run()
     .then(() => {
         console.log('running');
     });
 
 async function run() {
+
+    // prepare to listen to OSC
     setupOscListeners();
+
+    // start listening
     osc.open();
     console.log(`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
 
+    // tell ZoomOSC to listen to updates abou tthe users
     sendToZoom('/zoom/subscribe', 2);
-    sendToZoom('/zoom/list');    // Fetch the current list of users
+
+    // ask for snapshot of the users who were there first
+    sendToZoom('/zoom/list');
 }
 
 function sendToZoom(message: string, ...args: any[]) {
@@ -78,9 +95,11 @@ function sendToZoom(message: string, ...args: any[]) {
     }
 }
 
-function parseZoomOSCMessage(message) {
-    console.log("raw message:", message);
-
+/**
+ * Take a raw messages and turn it into an element we can easily deal with later
+ * @param message the raw message from ZoomOSC
+ */
+function parseZoomOSCMessage(message: any) {
     const [address, targetID, userName, galIndex, zoomID, params] = [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
 
     return {
@@ -93,42 +112,49 @@ function parseZoomOSCMessage(message) {
     }
 }
 
+/**
+ * Received a chat messages. Do something with it. If it starts with '/', then do something with it
+ * @param message the message received
+ */
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
-    if (chatMessage[0].startsWith('/')) {
 
-        if (!isHost(message.zoomID)) {
-            sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
-            return;
-        }
+    // only deal with chat messages starting with slash, else exit
+    if (!chatMessage[0].startsWith('/')) {
+        return;
+    }
 
-        // slash-command, do something with it
+    // only deal with chat messages from a host, else exit
+    if (!isHost(message.zoomID)) {
+        sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
+        return;
+    }
 
-        const params = parseChatParams(chatMessage);
-        console.log("args", params);
-        switch (params[0]) {
-            case '/mx':  // mute all except leaders
-                muteNonLeaders();
-                break;
-            case '/ua': // unmute all
-                sendToZoom('/zoom/all/unMute');
-                break;
-            case '/ma': // mute all
-                sendToZoom('/zoom/all/mute');
-                break;
-            case '/l': // leader
-                manageLeader(message, params);
-                break;
-            case '/list': // list all users
-                sendToZoom('/zoom/list');
-                break;
-            case '/state':
-                console.log("handleChatMessage state", state);
-                break;
-            default:
-                console.log("handleChatMessage Error: Unimplemented Chat Command");
-                sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
-        }
+    // slash-command, do something with it
+    const params = parseChatParams(chatMessage);
+    console.log("args", params);
+    switch (params[0]) {
+        case '/mx':  // mute all except leaders
+            muteNonLeaders();
+            break;
+        case '/ua': // unmute all
+            sendToZoom('/zoom/all/unMute');
+            break;
+        case '/ma': // mute all
+            sendToZoom('/zoom/all/mute');
+            break;
+        case '/l': // leader
+            manageLeader(message, params);
+            break;
+        case '/list': // list all users
+            sendToZoom('/zoom/list');
+            break;
+        case '/state':
+            console.log("handleChatMessage state", state);
+            break;
+        default:
+            console.log("handleChatMessage Error: Unimplemented Chat Command");
+            sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
     }
 }
 
@@ -214,6 +240,9 @@ function muteNonLeaders() {
 }
 
 function parseChatParams(str: string): string[] {
+    // this unreadable mess does this:
+    // . change curly-quotes to straight quotes (zoom tries to be smart about quotes)
+    // . combine words in quotes to be a single param. eg: param1 "second param" 'third param'
     return str && (String(str)
         .replace(/[\u2018\u2019]/g, "'")
         .replace(/[\u201C\u201D]/g, '"')
@@ -273,6 +302,7 @@ function handleList(message: ZoomOSCMessage) {
 
 function setupOscListeners() {
 
+    // convenient code to print every incoming messagse
     // osc.on('*', message => {
     //     console.log("OSC * Message", message)
     // });
@@ -292,12 +322,9 @@ function setupOscListeners() {
     osc.on('/zoomosc/me/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/list', async message => handleList(parseZoomOSCMessage(message)));
-
-    // osc.on('/zoomosc/galleryOrder', async message => console.log("/zoomosc/galleryOrder", message.args));
-    // osc.on('/zoomosc/galleryCount', async message => console.log("/zoomosc/galleryCount", message.args));
-    // osc.on('/zoomosc/galleryShape', async message => console.log("/zoomosc/galleryShape", message.args));
 }
 
+// not used right now, but could be used to pause between things
 // noinspection JSUnusedLocalSymbols
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));

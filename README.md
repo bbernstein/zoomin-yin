@@ -38,7 +38,39 @@ you can set `ZOOMOSC_HOST` and `ZOOMOSC_PORT`.
 
 ## Commands
 
-There's really just one command that Isadora needs to send:
+Any host can send chat messages to this user and it will do things:
 
-*nothibng yet, working on it*
+### List all users
+```
+/list
+```
 
+### Manage leaders
+
+With no parameters, it just lists current leaders.
+
+```
+/l
+```
+
+With a name given (in quotes if multiple words) it adds tha tuser to the leader list.
+```
+/l <username>
+```
+
+### Mute all except leaders
+```
+/mx
+```
+
+### Unmute everyone
+```
+/ua
+
+```
+
+### Mute everyone
+```
+/ma
+
+```
