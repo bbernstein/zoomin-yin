@@ -66,11 +66,9 @@ With a name given (in quotes if multiple words) it adds tha tuser to the leader 
 ### Unmute everyone
 ```
 /ua
-
 ```
 
 ### Mute everyone
 ```
 /ma
-
 ```
