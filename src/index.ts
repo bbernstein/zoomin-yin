@@ -79,7 +79,7 @@ async function run() {
     osc.open();
     console.log(`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
 
-    // tell ZoomOSC to listen to updates abou tthe users
+    // tell ZoomOSC to listen to updates about the users
     sendToZoom('/zoom/subscribe', 2);
 
     // ask for snapshot of the users who were there first
@@ -116,6 +116,18 @@ function parseZoomOSCMessage(message: any) {
  * Received a chat messages. Do something with it. If it starts with '/', then do something with it
  * @param message the message received
  */
+
+const HELPINFO = '\
+/h | /help	: Print this message   \n\
+/l		: Manage leaders           \n\
+    /l		    : Print leaders    \n\
+    /l "name"	: Replace list     \n\
+    /l + "name"	: Add to list      \n\
+    /l - "name"	: Remove from list \n\
+/ma		: Mute all users           \n\
+/mx		: Mute all but leaders     \n\
+/ua		: Unmute all users';
+
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
 
@@ -151,6 +163,10 @@ function handleChatMessage(message: ZoomOSCMessage) {
             break;
         case '/state':
             console.log("handleChatMessage state", state);
+            break;
+        case '/h':
+        case '/help':
+            sendToZoom('/zoom/zoomID/chat', message.zoomID, HELPINFO);
             break;
         default:
             console.log("handleChatMessage Error: Unimplemented Chat Command");
