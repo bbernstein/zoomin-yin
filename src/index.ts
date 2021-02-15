@@ -158,13 +158,14 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 }
 
-function isHost(zoomid: number) {
+function isHost(zoomid: number): boolean {
     const person = state.everyone.get(zoomid);
+    if (!person) return undefined;
     console.log("handleisHost person", person);
     return (person.userRole == HOST) || (person.userRole == COHOST);
 }
 
-function getPersonFromName(name: string) {
+function getPersonFromName(name: string): PersonState {
     const id = state.names.get(name);
     if (!id) return undefined;
     return state.everyone.get(id);
@@ -252,30 +253,35 @@ function parseChatParams(str: string): string[] {
 
 function handleUnmute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
+    if (!person) return;
     person.audioOn = true;
     // console.log("handleUnmute message, person", message, person);
 }
 
 function handleMute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
+    if (!person) return;
     person.audioOn = false;
     // console.log("handleMute message, person", message, person);
 }
 
 function handleVideoOn(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
+    if (!person) return;
     person.videoOn = true;
     // console.log("handleVideoOn message, person", message, person);
 }
 
 function handleVideoOff(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
+    if (!person) return;
     person.videoOn = false;
     // console.log("handleVideoOff message, person", message, person);
 }
 
 function handleRoleChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
+    if (!person) return;
     person.userRole = Number(message.params[0]);
     // console.log("handleRoleChanged message, person", message, person);
 }
