@@ -29,7 +29,7 @@ const COHOST = 2;
 // The definition of the current state of the room
 interface RoomState {
     // mapping names to their zoomIDs
-    names: Map<string, number>;
+    names: Map<string, number[]>;
 
     // who are the room "leaders" (people excluded from muting)
     leaders: number[];
@@ -59,7 +59,7 @@ interface ZoomOSCMessage {
 
 // The value of the room state
 const state: RoomState = {
-    names: new Map<string, number>(),
+    names: new Map<string, number[]>(),
     leaders: [],
     everyone: new Map<number, PersonState>()
 }
@@ -164,6 +164,10 @@ function handleChatMessage(message: ZoomOSCMessage) {
         case '/state':
             console.log("handleChatMessage state", state);
             break;
+        case '/rpin':
+            console.log("handleChatMessage", params[1], params[2]);
+            sendToZoom('/zoom/userName/remotePin', params[1], params[2]);
+            break;
         case '/h':
         case '/help':
             sendToZoom('/zoom/zoomID/chat', message.zoomID, HELPINFO);
@@ -181,31 +185,33 @@ function isHost(zoomid: number): boolean {
     return (person.userRole == HOST) || (person.userRole == COHOST);
 }
 
-function getPersonFromName(name: string): PersonState {
-    const id = state.names.get(name);
-    if (!id) return undefined;
-    return state.everyone.get(id);
+function getPeopleFromName(name: string): PersonState[] {
+    const ids = state.names.get(name);
+    if (!ids) return undefined;
+    // return all the people with that name
+    return ids.map(id => state.everyone.get(id));
 }
 
 function replaceLeader(name: string) {
-    const newLeader: PersonState = getPersonFromName(name);
-    if (!newLeader) return;
-    state.leaders = [newLeader.zoomID];
+    const newLeaders: PersonState[] = getPeopleFromName(name);
+    if (!newLeaders) return;
+    state.leaders = newLeaders.map(leader => leader.zoomID);
 }
 
 function addLeader(name: string) {
-    const newLeader: PersonState = getPersonFromName(name);
-    if (!newLeader) return;
-    if (state.leaders.includes(newLeader.zoomID)) return;       // already there as a leader
-    state.leaders.push(newLeader.zoomID);
+    const newLeaders: PersonState[] = getPeopleFromName(name);
+    if (!newLeaders) return;
+    const leadersToAdd = newLeaders.filter(leader => !state.leaders.includes(leader.zoomID));
+    // concat old leaders and new leaders that weren't already there
+    state.leaders = [...state.leaders, ...leadersToAdd.map(leader => leader.zoomID)];
 }
 
 function removeLeader(name: string) {
-    const newLeader: PersonState = getPersonFromName(name);
-    if (!newLeader) return;
-    if (state.leaders.includes(newLeader.zoomID)){      // already there as a leader
-        state.leaders.splice(state.leaders.findIndex(element => element == newLeader.zoomID),1);
-    }
+    const oldLeaders: PersonState[] = getPeopleFromName(name);
+    if (!oldLeaders) return;
+    const oldLeaderZoomIDs = oldLeaders.map(ol => ol.zoomID);
+    // filter out leaders with the above name
+    state.leaders = state.leaders.filter(leaderID => oldLeaderZoomIDs.includes(leaderID));
 }
 
 function displayLeaders(zoomid: number, leaders: number[]) {
@@ -227,7 +233,7 @@ function displayLeaders(zoomid: number, leaders: number[]) {
 
 function manageLeader(message: ZoomOSCMessage, params: string[]) {
     console.log("manageLeader", params);
-    if (params[1]) {
+    if (params.length > 1) {
         switch (params[1]) {
             case '+':  // add leader
                 addLeader(params[2]);
@@ -302,6 +308,67 @@ function handleRoleChanged(message: ZoomOSCMessage) {
     // console.log("handleRoleChanged message, person", message, person);
 }
 
+function addZoomIDToName(name: string, zoomID: number) {
+    const zoomIDs: number[] = state.names.get(name);
+    if (!zoomIDs) {
+        state.names.set(name, [zoomID]);
+        return;
+    }
+
+    // if it's already there, we're done
+    if (zoomIDs.includes(zoomID)) return;
+
+    state.names.set(name, [...zoomIDs, zoomID]);
+}
+
+function removeZoomIDFromName(name: string, zoomID: number) {
+    const zoomIDs: number[] = state.names.get(name);
+    // no zoom ids found, return
+    if (!zoomIDs) return;
+
+    const ind = zoomIDs.indexOf(zoomID);
+    // this zoomID wasn't found, return
+    if (ind < 0) return;
+
+    const newZoomIDs = zoomIDs.splice(ind, 1);
+    if (newZoomIDs.length === 0) {
+        // nothing left, remove the whole thing
+        state.names.delete(name);
+        return;
+    }
+
+    state.names.set(name, newZoomIDs);
+}
+
+
+function handleNameChanged(message: ZoomOSCMessage) {
+    const person = state.everyone.get(message.zoomID);
+    if (!person) return;
+
+    // update the names table
+    removeZoomIDFromName(person.userName, message.zoomID);
+    addZoomIDToName(message.userName, message.zoomID);
+    console.log(`handleuserNameChanged zoomID: ${message.zoomID}, oldName: ${person.userName}, newName: ${person.userName}`);
+
+    person.userName = message.userName;
+}
+
+function handleOnline(message: ZoomOSCMessage) {
+    let person: PersonState = state.everyone.get(message.zoomID);
+    if (person) return;
+
+    person = {
+        zoomID: message.zoomID,
+        userName: message.userName,
+        userRole: 0,
+        audioOn: false,
+        videoOn: false
+    }
+    state.everyone.set(person.zoomID, person);
+    addZoomIDToName(message.userName, message.zoomID);
+    console.log("handleOnline message, person", message, person);
+}
+
 function handleList(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
     if (!person) {
@@ -319,14 +386,14 @@ function handleList(message: ZoomOSCMessage) {
         person.audioOn = Boolean(message.params[5]);
         person.videoOn = Boolean(message.params[4]);
     }
-    state.names.set(message.userName, message.zoomID);
+    addZoomIDToName(message.userName, message.zoomID);
 }
 
 function setupOscListeners() {
 
     // convenient code to print every incoming messagse
     // osc.on('*', message => {
-    //     console.log("OSC * Message", message)
+    //      console.log("OSC * Message", message)
     // });
 
     osc.on('/zoomosc/user/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
@@ -335,6 +402,8 @@ function setupOscListeners() {
     osc.on('/zoomosc/user/videoOn', async message => handleVideoOn(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/userNameChanged', async message => handleNameChanged(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/online', async message => handleOnline(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
 
     osc.on('/zoomosc/me/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
@@ -343,6 +412,8 @@ function setupOscListeners() {
     osc.on('/zoomosc/me/videoOn', async message => handleVideoOn(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/videoOff', async message => handleVideoOff(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/userNameChanged', async message => handleNameChanged(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/online', async message => handleOnline(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/list', async message => handleList(parseZoomOSCMessage(message)));
 }
 
