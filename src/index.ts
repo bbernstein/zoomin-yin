@@ -326,11 +326,13 @@ function removeZoomIDFromName(name: string, zoomID: number) {
     // no zoom ids found, return
     if (!zoomIDs) return;
 
-    const ind = zoomIDs.indexOf(zoomID);
-    // this zoomID wasn't found, return
-    if (ind < 0) return;
-
-    const newZoomIDs = zoomIDs.splice(ind, 1);
+    // example of how to call a function inside a filter
+    const newZoomIDs = zoomIDs.filter((id) => {
+        console.log(`does ${id} == ${zoomID}?`)
+        return id !== zoomID;
+    });
+    // shortcut
+    //const newZoomIDs = zoomIDs.filter(id => id !== zoomID);
     if (newZoomIDs.length === 0) {
         // nothing left, remove the whole thing
         state.names.delete(name);
@@ -340,7 +342,6 @@ function removeZoomIDFromName(name: string, zoomID: number) {
     state.names.set(name, newZoomIDs);
 }
 
-
 function handleNameChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
@@ -348,7 +349,7 @@ function handleNameChanged(message: ZoomOSCMessage) {
     // update the names table
     removeZoomIDFromName(person.userName, message.zoomID);
     addZoomIDToName(message.userName, message.zoomID);
-    console.log(`handleuserNameChanged zoomID: ${message.zoomID}, oldName: ${person.userName}, newName: ${person.userName}`);
+    console.log(`handleuserNameChanged zoomID: ${message.zoomID}, oldName: ${person.userName}, newName: ${message.userName}`);
 
     person.userName = message.userName;
 }
