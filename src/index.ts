@@ -25,6 +25,10 @@ const osc = new OSC({
 
 const HOST = 1;
 const COHOST = 2;
+const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-support"
+const SKIP_PC = -1;
+const SKIP_PC_STRING = "-";
+const DEFAULT_MX_GRP = "leaders";
 
 // The definition of the current state of the room
 interface RoomState {
@@ -33,6 +37,9 @@ interface RoomState {
 
     // who are the room "leaders" (people excluded from muting)
     leaders: number[];
+
+    // custom groups of users
+    groups: Map<string, number[]>;
 
     // everyone's state
     everyone: Map<number, PersonState>;
@@ -61,6 +68,7 @@ interface ZoomOSCMessage {
 const state: RoomState = {
     names: new Map<string, number[]>(),
     leaders: [],
+    groups: new Map<string, number[]>(),
     everyone: new Map<number, PersonState>()
 }
 
@@ -147,7 +155,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
     console.log("args", params);
     switch (params[0]) {
         case '/mx':  // mute all except leaders
-            muteNonLeaders();
+            muteAllExceptGroup(message, params);
             break;
         case '/ua': // unmute all
             sendToZoom('/zoom/all/unMute');
@@ -155,8 +163,32 @@ function handleChatMessage(message: ZoomOSCMessage) {
         case '/ma': // mute all
             sendToZoom('/zoom/all/mute');
             break;
+        case '/m':  // mute group
+        case '/mute':
+            muteGroup(message, params);
+            break;
+        case '/u':  // unmute group
+        case '/unmute':
+            unmuteGroup(message, params);
+            break;
+        /* Replaced by /group command
         case '/l': // leader
             manageLeader(message, params);
+            break;
+            */
+        case '/g':
+        case '/grp':
+        case '/group': // create or list groups
+            manageGroups(message, params);
+            break;
+        case '/p':
+        case '/pin': // pin to second monitors (Must have a group called "ls-support")
+            setPin(message, params);
+            break;
+        case '/mp':
+        case '/mpin':
+        case '/multipin': // multipin to monitors (Must have a group called "ls-support")
+            setMultiPin(message, params);
             break;
         case '/list': // list all users
             sendToZoom('/zoom/list');
@@ -164,9 +196,9 @@ function handleChatMessage(message: ZoomOSCMessage) {
         case '/state':
             console.log("handleChatMessage state", state);
             break;
-        case '/rpin':
-            console.log("handleChatMessage", params[1], params[2]);
-            sendToZoom('/zoom/userName/remotePin', params[1], params[2]);
+        case '/test':
+            console.log("handleChatMessage /test", params[1], params[2]);
+            sendToZoom('/zoom/userName/remoteAddPin', params[1], params[2]);
             break;
         case '/h':
         case '/help':
@@ -181,7 +213,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
 function isHost(zoomid: number): boolean {
     const person = state.everyone.get(zoomid);
     if (!person) return undefined;
-    console.log("handleisHost person", person);
+    // console.log("handleisHost person", person);
     return (person.userRole == HOST) || (person.userRole == COHOST);
 }
 
@@ -192,75 +224,186 @@ function getPeopleFromName(name: string): PersonState[] {
     return ids.map(id => state.everyone.get(id));
 }
 
-function replaceLeader(name: string) {
-    const newLeaders: PersonState[] = getPeopleFromName(name);
-    if (!newLeaders) return;
-    state.leaders = newLeaders.map(leader => leader.zoomID);
-}
+// BB: No longer used. commented out for now
+// function replaceLeader(name: string) {
+//     const newLeaders: PersonState[] = getPeopleFromName(name);
+//     if (!newLeaders) return;
+//     state.leaders = newLeaders.map(leader => leader.zoomID);
+// }
 
-function addLeader(name: string) {
-    const newLeaders: PersonState[] = getPeopleFromName(name);
-    if (!newLeaders) return;
-    const leadersToAdd = newLeaders.filter(leader => !state.leaders.includes(leader.zoomID));
-    // concat old leaders and new leaders that weren't already there
-    state.leaders = [...state.leaders, ...leadersToAdd.map(leader => leader.zoomID)];
-}
+// BB: No longer used, commented out
+// function addLeader(name: string) {
+//     const newLeaders: PersonState[] = getPeopleFromName(name);
+//     if (!newLeaders) return;
+//     const leadersToAdd = newLeaders.filter(leader => !state.leaders.includes(leader.zoomID));
+//     // concat old leaders and new leaders that weren't already there
+//     state.leaders = [...state.leaders, ...leadersToAdd.map(leader => leader.zoomID)];
+// }
 
-function removeLeader(name: string) {
-    const oldLeaders: PersonState[] = getPeopleFromName(name);
-    if (!oldLeaders) return;
-    const oldLeaderZoomIDs = oldLeaders.map(ol => ol.zoomID);
-    // filter out leaders with the above name
-    state.leaders = state.leaders.filter(leaderID => oldLeaderZoomIDs.includes(leaderID));
-}
+// BB: No longer used
+// function removeLeader(name: string) {
+//     const oldLeaders: PersonState[] = getPeopleFromName(name);
+//     if (!oldLeaders) return;
+//     const oldLeaderZoomIDs = oldLeaders.map(ol => ol.zoomID);
+//     // filter out leaders with the above name
+//     state.leaders = state.leaders.filter(leaderID => oldLeaderZoomIDs.includes(leaderID));
+// }
 
-function displayLeaders(zoomid: number, leaders: number[]) {
-    var buffer;
+// BB: No longer used
+// function displayLeaders(zoomid: number, leaders: number[]) {
+//     let buffer = "Leaders: None Specified";
+//
+//     for (let i = 0; i < leaders.length; i++) {
+//         const person = state.everyone.get(leaders[i]);
+//         if (i === 0) {
+//             buffer = "Leaders: " + person.userName;
+//         } else {
+//             buffer = buffer.concat(", ", person.userName);
+//         }
+//     }
+//     console.log("manageLeader", buffer);
+//     sendToZoom('/zoom/zoomID/chat', zoomid, buffer);
+// }
 
-    buffer = "Leaders: None Specified";
+// BB: this is no longer used. Commented out in case you still want it
+// function manageLeader(message: ZoomOSCMessage, params: string[]) {
+//     console.log("manageLeader", params);
+//     if (params.length > 1) {
+//         switch (params[1]) {
+//             case '+':  // add leader
+//                 addLeader(params[2]);
+//                 console.log("manageLeader case +", params);
+//                 break;
+//             case '-':  // remove leader
+//                 removeLeader(params[2]);
+//                 break;
+//             default:   // replace leader
+//                 replaceLeader(params[1]);
+//         }
+//     }
+//
+//     displayLeaders(message.zoomID, state.leaders);
+// }
 
-    for (let i = 0; i < leaders.length; i++) {
-        const person = state.everyone.get(leaders[i]);
-        if (i == 0) {
-            buffer = "Leaders: " + person.userName;
+function createGroup(params: string[]) {
+    let zoomidList: number[] = [];
+
+    const namesList = params.slice(2);
+
+    namesList.forEach((name) => {
+        const curUser: PersonState[] = getPeopleFromName(name);
+        if (!curUser) {
+            if (name === SKIP_PC_STRING) {
+                zoomidList.push(SKIP_PC);
+            } else {
+                console.log(`createGroup: Error - User "${ name }" does not exist`);
+            }
         } else {
-            buffer = buffer.concat(", ", person.userName);
+            zoomidList.push(...curUser.map(user => user.zoomID));
         }
-    }
-    console.log("manageLeader", buffer);
-    sendToZoom('/zoom/zoomID/chat', zoomid, buffer);
+    });
+
+    state.groups.set(params[1], zoomidList);
 }
 
-function manageLeader(message: ZoomOSCMessage, params: string[]) {
-    console.log("manageLeader", params);
-    if (params.length > 1) {
-        switch (params[1]) {
-            case '+':  // add leader
-                addLeader(params[2]);
-                console.log("manageLeader case +", params);
-                break;
-            case '-':  // remove leader
-                removeLeader(params[2]);
-                break;
-            default:   // replace leader
-                replaceLeader(params[1]);
-        }
-    }
-
-    displayLeaders(message.zoomID, state.leaders);
+function displayGroup(zoomid: number, param: string) {
+    if (!state.groups.get(param)) return;
+    console.log("displayGroup", zoomid, state.groups.get(param));
+    //sendToZoom('/zoom/zoomID/chat', zoomid, buffer);
 }
 
-function muteNonLeaders() {
-    if (state.leaders.length === 0) {
-        // no leaders, mute everyone
+function manageGroups(message: ZoomOSCMessage, params: string[]) {
+    console.log("manageGroups: 1", params, params.length);
+    if (params.length > 2) {
+        createGroup(params);
+    }
+
+    displayGroup(message.zoomID, params[1]);
+}
+
+function setPin(message: ZoomOSCMessage, params: string[]) {
+    const supportPCs = state.groups.get(LS_SUPPORT_GRP);
+    const currentGroup = state.groups.get(params[1]);
+
+    let pos = -1;
+    currentGroup.forEach(function (zoomid) {
+        pos++;
+        if (zoomid == SKIP_PC) return;
+
+        const person = state.everyone.get(zoomid);
+        const pc = state.everyone.get(supportPCs[pos]);
+        const name = person.userName;
+
+        if (!person) {
+            console.log(`setPin: Error - User "${ person.zoomID }" does not exist`);
+        } else {
+            sendToZoom('/zoom/userName/remotePin2', pc.userName, name);
+        }
+    });
+}
+
+function setMultiPin(message: ZoomOSCMessage, params: string[]) {
+    const supportPCs = state.groups.get(LS_SUPPORT_GRP);
+    const currentGroup = state.groups.get(params[2]);
+
+    // This is a work in progress - Turns out that ZoomOSC doesn't support /users for remoteAddPin ( also a PRO feature )
+
+    console.log(`setMultiPin: params ${ params }, currentGroup ${ currentGroup }`);
+
+    const newGroup = currentGroup.filter(ele => ele !== SKIP_PC);
+
+    // BB: this was never used, I commented it out in case you still want it around
+    // const newGroupNames = newGroup.filter((zoomid) => {
+    //     const person = state.everyone.get(zoomid);
+    //     const name = person.userName;
+    //     return (name);
+    // });
+
+    if (!newGroup) {
+        console.log(`setMultiPin: Error - Empty Group "${ params[1] }"`);
+    } else {
+        const pc = state.everyone.get(supportPCs[params[1]]);
+        sendToZoom('/zoom/users/userName/remoteAddPin', pc, newGroup);
+    }
+}
+
+function muteAllExceptGroup(message: ZoomOSCMessage, params: string[]) {
+
+    let group: string;
+
+    if (!params[1]) {
+        group = DEFAULT_MX_GRP;
+    } else {
+        group = params[1];
+    }
+
+    if (!state.groups.get(group)) {
+        // no group available, mute everyone
         sendToZoom('/zoom/all/mute');
         return;
     }
 
     // Unmute the leaders then mute everyone else
-    sendToZoom('/zoom/users/zoomID/unMute', ...state.leaders);
-    sendToZoom('/zoom/allExcept/zoomID/mute', ...state.leaders);
+    sendToZoom('/zoom/users/zoomID/unMute', ...state.groups.get(group));
+    sendToZoom('/zoom/allExcept/zoomID/mute', ...state.groups.get(group));
 }
+
+function unmuteGroup(message: ZoomOSCMessage, params: string[]) {
+    const curGroup = state.groups.get(params[1]);
+    if (!curGroup) return;
+
+    sendToZoom('/zoom/users/zoomID/unMute', ...state.groups.get(params[1]));
+    displayGroup(message.zoomID, params[1]);
+}
+
+function muteGroup(message: ZoomOSCMessage, params: string[]) {
+    const curGroup = state.groups.get(params[1]);
+    if (!curGroup) return;
+
+    sendToZoom('/zoom/users/zoomID/mute', ...state.groups.get(params[1]));
+    displayGroup(message.zoomID, params[1]);
+}
+
 
 function parseChatParams(str: string): string[] {
     // this unreadable mess does this:
@@ -328,7 +471,7 @@ function removeZoomIDFromName(name: string, zoomID: number) {
 
     // example of how to call a function inside a filter
     const newZoomIDs = zoomIDs.filter((id) => {
-        console.log(`does ${id} == ${zoomID}?`)
+        console.log(`does ${ id } == ${ zoomID }?`)
         return id !== zoomID;
     });
     // shortcut
@@ -349,7 +492,7 @@ function handleNameChanged(message: ZoomOSCMessage) {
     // update the names table
     removeZoomIDFromName(person.userName, message.zoomID);
     addZoomIDToName(message.userName, message.zoomID);
-    console.log(`handleuserNameChanged zoomID: ${message.zoomID}, oldName: ${person.userName}, newName: ${message.userName}`);
+    console.log(`handleuserNameChanged zoomID: ${ message.zoomID }, oldName: ${ person.userName }, newName: ${ message.userName }`);
 
     person.userName = message.userName;
 }
