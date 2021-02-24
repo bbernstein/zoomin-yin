@@ -48,19 +48,20 @@ const state = {
 // get this thing started
 run()
     .then(() => {
-    // myName and primaryMode are need to support /xlocal commands
-    // NOTE: Get myName from the command line until we find a way to figure it out from ZoomOSC
-    if (process.argv[2]) {
-        myName = process.argv[2];
-    }
-    if (process.argv[3]) {
-        primaryMode = (process.argv[3] != "-secondary");
-    }
-    console.log(`running in ${primaryMode ? "Primary" : "Secondary"} mode`);
-    console.log(`running as user "${myName}"`);
+    console.log(`running ...`);
 });
 function run() {
     return __awaiter(this, void 0, void 0, function* () {
+        // myName and primaryMode are need to support /xlocal commands
+        // NOTE: Get myName from the command line until we find a way to figure it out from ZoomOSC
+        if (process.argv[2]) {
+            myName = process.argv[2];
+        }
+        if (process.argv[3]) {
+            primaryMode = (process.argv[3] != "-secondary");
+        }
+        console.log(`running in ${primaryMode ? "Primary" : "Secondary"} mode`);
+        console.log(`running as user "${myName}"`);
         // prepare to listen to OSC
         setupOscListeners();
         // start listening
@@ -108,9 +109,9 @@ const HELPINFO = '\
 function handleChatMessage(message) {
     const chatMessage = message.params;
     // set myZoomID
-    if (myZoomID[0] == 0) {
-        myZoomID = state.names.get(myName);
-    }
+    // if (myZoomID[0] == 0) {
+    //     myZoomID = state.names.get(myName);
+    // }
     // only deal with chat messages starting with slash, else exit
     if (!chatMessage[0].startsWith('/')) {
         return;
@@ -220,18 +221,68 @@ function createGroup(params) {
     });
     state.groups.set(params[1], zoomidList);
 }
-function displayGroup(zoomid, param) {
-    if (!state.groups.get(param))
+function deleteGroup(zoomid, param) {
+    const members = state.groups.get(param);
+    if (!members) {
+        console.log(`deleteGroup Error: Group "${param}" Does not exist`);
+        sendToZoom('/zoom/zoomID/chat', zoomid, `displayGroup Error: Group "${param}" Does not exist`);
         return;
-    console.log("displayGroup", zoomid, state.groups.get(param));
-    //sendToZoom('/zoom/zoomID/chat', zoomid, buffer);
+    }
+    state.groups.delete(param);
+}
+function displayGroup(recipientZoomID, param) {
+    const members = state.groups.get(param);
+    if (!members) {
+        console.log(`displayGroup Error: Group "${param}" Does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${param}" Does not exist`);
+        return;
+    }
+    let buffer = "/grp " + param;
+    members.forEach((zoomid) => {
+        const person = state.everyone.get(zoomid);
+        const name = person.userName;
+        buffer = buffer.concat(" \"" + name + "\"");
+    });
+    console.log("displayGroup :", buffer);
+    sendToZoom('/zoom/zoomID/chat', recipientZoomID, buffer);
+}
+function displayAllGroups(recipientZoomID) {
+    state.groups
+        .forEach((memberZoomIDs, groupName) => {
+        displayGroup(recipientZoomID, groupName);
+    });
 }
 function manageGroups(message, params) {
-    console.log("manageGroups: 1", params, params.length);
+    // Usage:  /grp [(-l |-list) | (-la -listall) | (-d | -delete)] <groupname>
+    //         /grp <groupname>
+    // Sub commands
+    if (params[1].startsWith('-')) {
+        switch (params[1]) {
+            case '-l':
+            case '-list':
+                if (params[2]) {
+                    displayGroup(message.zoomID, params[2]);
+                }
+                break;
+            case '-la':
+            case '-listall':
+                displayAllGroups(message.zoomID);
+                break;
+            case '-d':
+            case '-delete':
+                if (params[2]) {
+                    deleteGroup(message.zoomID, params[2]);
+                }
+                break;
+            default:
+                console.log("manageGroups Error: Unimplemented Groups Sub-Command");
+                sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Groups Sub-Command");
+        }
+        return;
+    }
     if (params.length > 2) {
         createGroup(params);
     }
-    displayGroup(message.zoomID, params[1]);
 }
 function setPin(message, params) {
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
@@ -291,29 +342,32 @@ function unmuteGroup(message, params) {
     if (!curGroup)
         return;
     sendToZoom('/zoom/users/zoomID/unMute', ...state.groups.get(params[1]));
-    displayGroup(message.zoomID, params[1]);
+    // displayGroup(message.zoomID, params[1]);
 }
 function muteGroup(message, params) {
     const curGroup = state.groups.get(params[1]);
     if (!curGroup)
         return;
     sendToZoom('/zoom/users/zoomID/mute', ...state.groups.get(params[1]));
-    displayGroup(message.zoomID, params[1]);
+    // displayGroup(message.zoomID, params[1]);
 }
 function executeRemote(message, params) {
     const curUser = getPeopleFromName(params[1]);
     if (!curUser)
         return;
     console.log(`executeRemote`);
-    sendToZoom('/zoom/zoomID/chat', curUser.map(user => user.zoomID), "/xlocal ", ...params.slice[2]);
+    // using the zoomID isnlt working - use userName for now
+    // sendToZoom('/zoom/zoomID/chat', curUser.map(user => user.zoomID), "/xlocal ", ...params.slice[2]);
+    sendToZoom('/zoom/myName/chat', curUser.map(user => user.userName), "/xlocal ", ...params.slice[2]);
 }
 function executeLocal(message, params) {
     // no zoom ids found, return
-    if (myZoomID) {
-    }
+    // if (myZoomID) {
+    // }
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
     // Make sure this is the targetPC
-    if (Number(params[1]) == myZoomID[0]) {
+    // if (Number(params[1]) == myZoomID[0]) {        -- Having troubles with using the zoomid
+    if (params[1] == myName) {
         // NOTE: Not able to send all parameters at this time
         // sendToZoom(params[2], ...params.slice[3]);
         sendToZoom(params[2], params[3]);
