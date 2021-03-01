@@ -465,6 +465,10 @@ function executeRemote(message: ZoomOSCMessage, params: string[]) {
 
     // using the zoomID isnlt working - use userName for now
     // sendToZoom('/zoom/zoomID/chat', curUser.map(user => user.zoomID), "/xlocal ", ...params.slice[2]);
+
+    // BB: did you mean to slice starting at index 2 or to slice the element in index 2?
+    // maybe shoud be `...params.slice(2)
+
     sendToZoom('/zoom/myName/chat', curUser.map(user => user.userName), "/xlocal ", ...params.slice[2]);
 
 }
@@ -632,7 +636,11 @@ function handleList(message: ZoomOSCMessage) {
 
 function handleMeetingStatus(message: ZoomOSCMessage) {
 
-    // state = [];
+    // BB: do you need the message param?
+
+    state.names.clear();
+    state.groups.clear();
+    state.everyone.clear();
 
     // console.log("handleMeetingStatus", message);
 }
