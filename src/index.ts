@@ -160,13 +160,15 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 
     // only deal with chat messages from a host, else exit
-    if (!isHost(message.zoomID)) {
+    // FIXME: For now, don't do isHost check for /xlocal commands
+    const params = parseChatParams(chatMessage);
+    if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
         sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
         return;
     }
 
     // slash-command, do something with it
-    const params = parseChatParams(chatMessage);
+    // const params = parseChatParams(chatMessage);
     console.log("args", params);
 
     // only /xlocal command is allowed on Secondary mode
@@ -219,8 +221,8 @@ function handleChatMessage(message: ZoomOSCMessage) {
             console.log(`state:`, state);
             break;
         case '/test':
-            console.log("handleChatMessage /test", params[1], params[2]);
-            sendToZoom('/zoom/userName/remoteAddPin', params[1], params[2]);
+            console.log("setMultiPin: /zoom/clearPin");
+            sendToZoom("/zoom/clearPin");
             break;
         case '/h':
         case '/help':
@@ -393,31 +395,58 @@ function setPin(message: ZoomOSCMessage, params: string[]) {
         if (!person) {
             console.log(`setPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
-            // FIXME: Prefer is to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-            //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
+            // Check I'm the target
+            if (targetPC.userName == myName) {
+                console.log(`setPin: /zoom/userName/pin2, ${name}`);
+                sendToZoom("/zoom/userName/pin2", name);
+            } else {
+                // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
+                //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
 
-            console.log('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/userName/pin2 "${name}"`);
-            sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/userName/pin2 "${name}"`);
+                console.log('setPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/pin2 "${name}"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/pin2 "${name}"`);
+            }
         }
     });
 }
 
 function setMultiPin(message: ZoomOSCMessage, params: string[]) {
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
-    const currentGroup = state.groups.get(params[2]);
+    const currentGroup = state.groups.get(params[1]);
 
-    // FIXME: This is a work in progress - Turns out that ZoomOSC doesn't support /users groups for remoteAddPin ( also a PRO feature )
+    // FIXME: need to implement default multipin device - Use first device in list for now. 
+    let pos = 0;
+    const targetPC = state.everyone.get(supportPCs[pos]);
 
-    console.log(`setMultiPin: params ${ params }, currentGroup ${ currentGroup }`);
-
-    const newGroup = currentGroup.filter(ele => ele !== SKIP_PC);
-
-    if (!newGroup) {
-        console.log(`setMultiPin: Error - Empty Group "${ params[1] }"`);
+    // Clear all Pins before adding new group
+    if (targetPC.userName == myName) {
+        console.log("setMultiPin: /zoom/clearPin");
+        sendToZoom("/zoom/clearPin");
     } else {
-        const pc = state.everyone.get(supportPCs[params[1]]);
-        sendToZoom('/zoom/users/userName/remoteAddPin', pc, newGroup);
+        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/clearPin`);
+        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/clearPin`);
     }
+
+    currentGroup.forEach(function (zoomid) {
+        if (zoomid == SKIP_PC) return;
+
+        const person = state.everyone.get(zoomid);
+        const name = person.userName;
+
+        if (!person) {
+            console.log(`setMultiPin: Error - User "${person.zoomID}" does not exist`);
+        } else {
+            if (targetPC.userName == myName) {
+                console.log(`setMultiPin: /zoom/userName/addPin, ${name}`);
+                sendToZoom("/zoom/userName/addPin", name);
+            } else {
+                // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
+                //        Also, not sure if addPin works with a list of zoomID's
+                console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/addPin "${name}"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/addPin "${name}"`);
+            }
+        }
+    });
 }
 
 function muteAllExceptGroup(message: ZoomOSCMessage, params: string[]) {
@@ -479,13 +508,17 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // }
 
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
-
+    console.log(`executeLocal myName = ${myName}`,params);
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
         // FIXME: Not able to send all parameters at this time
         // sendToZoom(params[2], ...params.slice[3]);
-        sendToZoom(params[2], params[3]);
+        if (params[3]) {
+            sendToZoom(params[2], params[3]);
+        } else {
+            sendToZoom(params[2]);
+        }
     }
 }
 
