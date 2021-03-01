@@ -160,8 +160,9 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 
     // only deal with chat messages from a host, else exit
-    // FIXME: For now, don't do isHost check for /xlocal commands
+    // FIXME: Since we don't zoomID info for the users,for now, don't do isHost check for /xlocal commands
     const params = parseChatParams(chatMessage);
+    // if (!isHost(message.zoomID)) {
     if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
         sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
         return;
@@ -196,33 +197,30 @@ function handleChatMessage(message: ZoomOSCMessage) {
             break;
         case '/g':
         case '/grp':
+        case '/grps':
         case '/group': // create or list groups
             manageGroups(message, params);
             break;
         case '/p':
         case '/pin': // pin to second monitors (Must have a group called "ls-support")
-            setPin(message, params);
+            setPin(message.zoomID, params);
             break;
         case '/mp':
         case '/mpin':
         case '/multipin': // multipin to monitors (Must have a group called "ls-support")
-            setMultiPin(message, params);
+            setMultiPin(message.zoomID, params);
             break;
-        case '/names':
+        case '/names':    // Display the current list of users 
             displayAllNames(message.zoomID);
             break;
-        case '/list': // list all users
+        case '/list':     // initiate a /list command
             sendToZoom('/zoom/list');
             break;
-        case '/state':
+        case '/state':   // Display full state on console
             console.log("handleChatMessage state");
             console.log(`  myName: ${myName}`);
             console.log(`  myZoomID: ${myZoomID}`);
             console.log(`state:`, state);
-            break;
-        case '/test':
-            console.log("setMultiPin: /zoom/clearPin");
-            sendToZoom("/zoom/clearPin");
             break;
         case '/h':
         case '/help':
@@ -233,6 +231,16 @@ function handleChatMessage(message: ZoomOSCMessage) {
             break;
         case '/xlocal':
             executeLocal(message, params);
+            break;
+        case '/reset':    // Clear state and build new state
+            state.names.clear();
+            state.groups.clear();
+            state.everyone.clear();
+            sendToZoom('/zoom/list');
+            break;
+        case '/test':
+            // console.log("quicktest: /zoom/clearPin");
+            // sendToZoom("/zoom/clearPin");
             break;
         default:
             console.log("handleChatMessage Error: Unimplemented Chat Command");
@@ -279,8 +287,8 @@ function deleteGroup(zoomid: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
-        console.log(`deleteGroup Error: Group "${param}" Does not exist`);
-        sendToZoom('/zoom/zoomID/chat', zoomid, `displayGroup Error: Group "${param}" Does not exist`);
+        console.log(`deleteGroup Error: Group "${param}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', zoomid, `displayGroup Error: Group "${param}" does not exist`);
         return;
     }
 
@@ -291,8 +299,8 @@ function displayGroup(recipientZoomID: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
-        console.log(`displayGroup Error: Group "${param}" Does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${param}" Does not exist`);
+        console.log(`displayGroup Error: Group "${param}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${param}" does not exist`);
         return;
     }
 
@@ -319,8 +327,8 @@ function displayName(recipientZoomID: number, param: string) {
     const members = state.names.get(param);
 
     if (!members) {
-        console.log(`displayName Error: Name "${param}" Does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayName Error: Group "${param}" Does not exist`);
+        console.log(`displayName Error: Name "${param}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayName Error: Group "${param}" does not exist`);
         return;
     }
 
@@ -344,7 +352,7 @@ function displayAllNames(recipientZoomID: number) {
 
 function manageGroups(message: ZoomOSCMessage, params: string[]) {
 
-    // Usage:  /grp [(-l |-list) | (-la -listall) | (-d | -delete)] <groupname>
+    // Usage:  /grp [(-l |-list) | (-la -listall) | (-d | -delete) | (-da | -deleteall] <groupname>
     //         /grp <groupname> [<group members>]
 
     // Sub commands
@@ -366,6 +374,10 @@ function manageGroups(message: ZoomOSCMessage, params: string[]) {
                     deleteGroup(message.zoomID, params[2]);
                 }
                 break;
+            case '-da':
+            case '-deleteall':
+                state.groups.clear();
+                break;
             default:
                 console.log("manageGroups Error: Unimplemented Groups Sub-Command");
                 sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Groups Sub-Command");
@@ -373,13 +385,12 @@ function manageGroups(message: ZoomOSCMessage, params: string[]) {
         return;
     }
 
-
     if (params.length > 2) {
         createGroup(params);
     }
 }
 
-function setPin(message: ZoomOSCMessage, params: string[]) {
+function setPin(recipientZoomID: number, params: string[]) {
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
     const currentGroup = state.groups.get(params[1]);
 
@@ -391,40 +402,70 @@ function setPin(message: ZoomOSCMessage, params: string[]) {
         const person = state.everyone.get(zoomid);
         const name = person.userName;
         const targetPC = state.everyone.get(supportPCs[pos]);
+        if (targetPC.zoomID == SKIP_PC) return;
 
         if (!person) {
             console.log(`setPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
-            // Check I'm the target
+            // Check if I'm the target
             if (targetPC.userName == myName) {
                 console.log(`setPin: /zoom/userName/pin2, ${name}`);
                 sendToZoom("/zoom/userName/pin2", name);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
-
-                console.log('setPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/pin2 "${name}"`);
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/pin2 "${name}"`);
+                console.log('setPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/userName/pin2 "${name}"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/userName/pin2 "${name}"`);
             }
         }
     });
 }
 
-function setMultiPin(message: ZoomOSCMessage, params: string[]) {
+function setMultiPin(recipientZoomID: number, params: string[]) {
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
     const currentGroup = state.groups.get(params[1]);
 
-    // FIXME: need to implement default multipin device - Use first device in list for now. 
-    let pos = 0;
-    const targetPC = state.everyone.get(supportPCs[pos]);
+    // FIXME: Need to implement default multipin device - Use primary device for now.
+    //        This could/should change when there are more than one activations
+    const multipinDevice = myName;
+
+    // Make sure device exists 
+    const device = getPeopleFromName(multipinDevice);
+    if (!device) {
+        console.log(`setMultiPin Error: User "${multipinDevice}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: User "${multipinDevice}" does not exist`);
+        return;
+    }
+    // Make sure LS-SUPPORT group exists
+    if (!supportPCs) {
+        console.log(`setMultiPin Error: LS-SUPPORT Group "${LS_SUPPORT_GRP}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: LS-SUPPORT Group "${LS_SUPPORT_GRP}" does not exist`);
+        return;
+    }
+    // Make sure device is in LS-SUPPORT group
+    const gotit = supportPCs.filter(id => id == device[0].zoomID);
+    if (gotit.length == 0) {
+        console.log(`setMultiPin Error: Device: "${multipinDevice}" is not included in Group: "${LS_SUPPORT_GRP}"`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID,
+            `setMultiPin Error: Device: "${multipinDevice}" is not included in Group: "${LS_SUPPORT_GRP}"`);
+        return;
+    }
+    // Make sure Multipin group exists
+    if (!currentGroup) {
+        console.log(`setMultiPin Error: Group "${params[1]}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: Group "${params[1]}" does not exist`);
+        return;
+    }
+
+    const targetPC = state.everyone.get(device[0].zoomID);
 
     // Clear all Pins before adding new group
     if (targetPC.userName == myName) {
         console.log("setMultiPin: /zoom/clearPin");
         sendToZoom("/zoom/clearPin");
     } else {
-        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/clearPin`);
-        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/clearPin`);
+        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
+        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
     }
 
     currentGroup.forEach(function (zoomid) {
@@ -492,14 +533,9 @@ function executeRemote(message: ZoomOSCMessage, params: string[]) {
 
     console.log(`executeRemote`);
 
-    // using the zoomID isnlt working - use userName for now
-    // sendToZoom('/zoom/zoomID/chat', curUser.map(user => user.zoomID), "/xlocal ", ...params.slice[2]);
-
-    // BB: did you mean to slice starting at index 2 or to slice the element in index 2?
-    // maybe shoud be `...params.slice(2)
-
-    sendToZoom('/zoom/myName/chat', curUser.map(user => user.userName), "/xlocal ", ...params.slice[2]);
-
+    // FIXME: using the zoomID isn't working - use userName for now
+    // sendToZoom('/zoom/zoomID/chat', curUser.map(user => user.zoomID), "/xlocal ", ...params.slice(2));
+     sendToZoom('/zoom/userName/chat', curUser.map(user => user.userName), "/xlocal ", ...params.slice(2));
 }
 
 function executeLocal(message: ZoomOSCMessage, params: string[]) {
@@ -508,7 +544,7 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // }
 
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
-    console.log(`executeLocal myName = ${myName}`,params);
+    console.log(`executeLocal myName = "${myName}"`,params);
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
@@ -668,14 +704,9 @@ function handleList(message: ZoomOSCMessage) {
 }
 
 function handleMeetingStatus(message: ZoomOSCMessage) {
-
-    // BB: do you need the message param?
-
     state.names.clear();
     state.groups.clear();
     state.everyone.clear();
-
-    // console.log("handleMeetingStatus", message);
 }
 
 function setupOscListeners() {
