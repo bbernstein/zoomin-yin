@@ -497,8 +497,8 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
         console.log("setMultiPin: /zoom/me/clearPin");
         sendToZoom("/zoom/me/clearPin");
      } else {
-        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
-        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
+        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/clearPin`);
+        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/clearPin`);
     }
 
     currentGroup.forEach(function (zoomid) {
