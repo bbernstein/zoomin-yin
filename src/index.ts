@@ -494,8 +494,8 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
 
     // Clear all Pins before adding new group
     if (targetPC.userName == myName) {
-        console.log("setMultiPin: /zoom/clearPin");
-        sendToZoom("/zoom/clearPin");
+        console.log("setMultiPin: /zoom/me/clearPin");
+        sendToZoom("/zoom/me/clearPin");
      } else {
         console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
         sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
