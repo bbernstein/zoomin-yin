@@ -140,10 +140,21 @@ function parseZoomOSCMessage(message: any) {
  */
 
 const HELPINFO = '\
-/h | /help	: Print this message   \n\
-/ma		 : Mute all users          \n\
-/mx	[grp]: Mute all but group      \n\
-/ua		 : Unmute all users';
+/h | /help            \n\
+/grp [options] <name> \n\
+  [-l | -la | -d | -da]\n\
+/list   : Update State \n\
+/ma	    : Mute All     \n\
+/mpin <group> : Multipin\n\
+/mute <group>          \n\
+/mx [grp]  : MA Except \n\
+/names   : List Names  \n\
+/pin <group>           \n\
+/reset  : Reset State  \n\
+/state  : Show State   \n\
+/ua     : Unmute All   \n\
+/umute <group>         \n\
+';
 
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params;
@@ -160,7 +171,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 
     // only deal with chat messages from a host, else exit
-    // FIXME: Since we don't zoomID info for the users,for now, don't do isHost check for /xlocal commands
+    // FIXME: Since we don't have zoomID info for the users,for now, don't do isHost check for /xlocal commands
     const params = parseChatParams(chatMessage);
     // if (!isHost(message.zoomID)) {
     if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
@@ -178,7 +189,7 @@ function handleChatMessage(message: ZoomOSCMessage) {
     }
 
     switch (params[0]) {
-        case '/mx':  // mute all except but members of group - No option => use LS_SUPPORT_GRP
+        case '/mx':  // mute all except members of group - No option => use LS_SUPPORT_GRP
             muteAllExceptGroup(message, params);
             break;
         case '/ua': // unmute all
@@ -199,15 +210,15 @@ function handleChatMessage(message: ZoomOSCMessage) {
         case '/grp':
         case '/grps':
         case '/group': // create or list groups
-            manageGroups(message, params);
+            manageGroups(message.zoomID, params);
             break;
         case '/p':
         case '/pin': // pin to second monitors (Must have a group called "ls-support")
             setPin(message.zoomID, params);
             break;
         case '/mp':
-        case '/mpin':
-        case '/multipin': // multipin to monitors (Must have a group called "ls-support")
+        case '/mpin':     // multipin to monitor (Must have a group called "ls-support")
+        case '/multipin': // Can only multipin to a device running ZoomOSC PRO
             setMultiPin(message.zoomID, params);
             break;
         case '/names':    // Display the current list of users 
@@ -262,7 +273,7 @@ function getPeopleFromName(name: string): PersonState[] {
     return ids.map(id => state.everyone.get(id));
 }
 
-function createGroup(params: string[]) {
+function createGroup(recipientZoomID: number, params: string[]) {
     let zoomidList: number[] = [];
 
     const namesList = params.slice(2);
@@ -273,7 +284,8 @@ function createGroup(params: string[]) {
             if (name === SKIP_PC_STRING) {
                 zoomidList.push(SKIP_PC);
             } else {
-                console.log(`createGroup: Error - User "${ name }" does not exist`);
+                console.log(`createGroup: Error - User "${name}" does not exist`);
+                sendToZoom('/zoom/zoomID/chat', recipientZoomID, `createGroup: Error - User "${name}" does not exist`);
             }
         } else {
             zoomidList.push(...curUser.map(user => user.zoomID));
@@ -283,12 +295,12 @@ function createGroup(params: string[]) {
     state.groups.set(params[1], zoomidList);
 }
 
-function deleteGroup(zoomid: number, param: string) {
+function deleteGroup(recipientZoomID: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
         console.log(`deleteGroup Error: Group "${param}" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', zoomid, `displayGroup Error: Group "${param}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${param}" does not exist`);
         return;
     }
 
@@ -306,9 +318,13 @@ function displayGroup(recipientZoomID: number, param: string) {
 
     let buffer = "/grp " + param;
     members.forEach((zoomid) => {
+        if (zoomid == SKIP_PC) {
+            buffer = buffer.concat(" " + SKIP_PC_STRING);
+        } else {
         const person = state.everyone.get(zoomid);
         const name = person.userName;
-        buffer = buffer.concat(" \"" + name + "\"");
+            buffer = buffer.concat(" \"" + name + "\"");
+        }
     });
 
     console.log("displayGroup :", buffer);
@@ -350,7 +366,7 @@ function displayAllNames(recipientZoomID: number) {
         })
 }
 
-function manageGroups(message: ZoomOSCMessage, params: string[]) {
+function manageGroups(recipientZoomID: number, params: string[]) {
 
     // Usage:  /grp [(-l |-list) | (-la -listall) | (-d | -delete) | (-da | -deleteall] <groupname>
     //         /grp <groupname> [<group members>]
@@ -361,17 +377,17 @@ function manageGroups(message: ZoomOSCMessage, params: string[]) {
             case '-l':
             case '-list':
                 if (params[2]) {
-                    displayGroup(message.zoomID, params[2]);
+                    displayGroup(recipientZoomID, params[2]);
                 }
                 break;
             case '-la':
             case '-listall':
-                displayAllGroups(message.zoomID);
+                displayAllGroups(recipientZoomID);
                 break;
             case '-d':
             case '-delete':
                 if (params[2]) {
-                    deleteGroup(message.zoomID, params[2]);
+                    deleteGroup(recipientZoomID, params[2]);
                 }
                 break;
             case '-da':
@@ -380,19 +396,35 @@ function manageGroups(message: ZoomOSCMessage, params: string[]) {
                 break;
             default:
                 console.log("manageGroups Error: Unimplemented Groups Sub-Command");
-                sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Groups Sub-Command");
+                sendToZoom('/zoom/zoomID/chat', recipientZoomID, "Error: Unimplemented Groups Sub-Command");
         }
         return;
     }
 
     if (params.length > 2) {
-        createGroup(params);
+        createGroup(recipientZoomID, params);
+    } else {
+        displayGroup(recipientZoomID, params[1]);
     }
 }
 
 function setPin(recipientZoomID: number, params: string[]) {
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
     const currentGroup = state.groups.get(params[1]);
+
+    // Make sure LS-SUPPORT group exists
+    if (!supportPCs) {
+        console.log(`setPin Error: LS-SUPPORT Group "${LS_SUPPORT_GRP}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin Error: LS-SUPPORT Group "${LS_SUPPORT_GRP}" does not exist`);
+        return;
+    }
+
+    // Make sure group exists
+    if (!currentGroup) {
+        console.log(`setPin Error: Group "${params[1]}" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin Error: Group "${params[1]}" does not exist`);
+        return;
+    }
 
     let pos = -1;
     currentGroup.forEach(function (zoomid) {
@@ -405,7 +437,8 @@ function setPin(recipientZoomID: number, params: string[]) {
         if (targetPC.zoomID == SKIP_PC) return;
 
         if (!person) {
-            console.log(`setPin: Error - User "${ person.zoomID }" does not exist`);
+            console.log(`setPin: Error - User "${person.zoomID}" does not exist`);
+            sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin: Error - User "${person.zoomID}" does not exist`);
         } else {
             // Check if I'm the target
             if (targetPC.userName == myName) {
@@ -461,11 +494,11 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
 
     // Clear all Pins before adding new group
     if (targetPC.userName == myName) {
-        console.log("setMultiPin: /zoom/clearPin");
-        sendToZoom("/zoom/clearPin");
-    } else {
-        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
-        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/clearPin`);
+        console.log("setMultiPin: /zoom/me/clearPin");
+        sendToZoom("/zoom/me/clearPin");
+     } else {
+        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/clearPin`);
+        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/clearPin`);
     }
 
     currentGroup.forEach(function (zoomid) {
@@ -476,6 +509,7 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
 
         if (!person) {
             console.log(`setMultiPin: Error - User "${person.zoomID}" does not exist`);
+            sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin: Error - User "${person.zoomID}" does not exist`);
         } else {
             if (targetPC.userName == myName) {
                 console.log(`setMultiPin: /zoom/userName/addPin, ${name}`);
@@ -548,13 +582,9 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
-        // FIXME: Not able to send all parameters at this time
-        // sendToZoom(params[2], ...params.slice[3]);
-        if (params[3]) {
-            sendToZoom(params[2], params[3]);
-        } else {
-            sendToZoom(params[2]);
-        }
+        // FIXME: Not sure why this doesn't compile - Probably because the result of the slice could be null
+        // sendToZoom(...params.slice(2));
+        sendToZoom(params[2], ...params.slice(3));
     }
 }
 
@@ -683,6 +713,18 @@ function handleOnline(message: ZoomOSCMessage) {
     console.log("handleOnline message, person", message, person);
 }
 
+// FIXME: ZoomOSC is not issuing the offline command yet
+function handleOffline(message: ZoomOSCMessage) {
+    let person: PersonState = state.everyone.get(message.zoomID);
+
+    if (person) return;
+
+    console.log("handleOffline message, person", message, person);
+    state.everyone.delete(person.zoomID);
+    removeZoomIDFromName(message.userName, message.zoomID);
+
+}
+
 function handleList(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
     if (!person) {
@@ -726,6 +768,7 @@ function setupOscListeners() {
     osc.on('/zoomosc/user/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/userNameChanged', async message => handleNameChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/online', async message => handleOnline(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/user/offline', async message => handleOffline(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/list', async message => handleList(parseZoomOSCMessage(message)));
 
     osc.on('/zoomosc/me/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
@@ -736,6 +779,7 @@ function setupOscListeners() {
     osc.on('/zoomosc/me/roleChanged', async message => handleRoleChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/userNameChanged', async message => handleNameChanged(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/online', async message => handleOnline(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/me/offline', async message => handleOffline(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/me/list', async message => handleList(parseZoomOSCMessage(message)));
 }
 
