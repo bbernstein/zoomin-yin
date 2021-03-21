@@ -160,18 +160,8 @@ function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params[0];
     if (chatMessage.charAt(0) !== '/') return;
 
-    /**
-     * it looks like ZoomOSC strips out newlines even though they appear in the chat
-     * so, it will look for anything looking like a command and assume that
-     * is the start of the next line
-     */
-
-
     // clean the quotes before moving on
     cleanCurlyQuotes(chatMessage)
-
-        // find anything looking like '/thing' and assume that is the start of a new line (insert '\n' before it)
-        .replace(/\/[a-z]+/g, "\n$&")
 
         // split each of the lines into an array item
         .split('\n')
@@ -618,10 +608,11 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     }
 }
 
-// Zoom replaces quote/apos with curly quotes. This changes them back
+// This changes curly quotes and strange line-endings to plain ascii versions
 function cleanCurlyQuotes(str: string): string {
     return str &&
         String(str)
+            .replace(/[\u2028]/g, "\n")
             .replace(/[\u2018\u2019]/g, "'")
             .replace(/[\u201C\u201D]/g, '"');
 }
