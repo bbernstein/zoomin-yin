@@ -166,9 +166,6 @@ function handleChatMessage(message: ZoomOSCMessage) {
         // split each of the lines into an array item
         .split('\n')
 
-        // skip the first one since we inserted a newline at the start
-        .slice(1)
-
         // send each of the lines as separate commands
         .forEach(chatLine => {
             const subMessage: ZoomOSCMessage = { ...message, params: chatLine.trim() };
@@ -612,6 +609,7 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
 function cleanCurlyQuotes(str: string): string {
     return str &&
         String(str)
+            .replace(/[\r]/g, "\n")
             .replace(/[\u2028]/g, "\n")
             .replace(/[\u2018\u2019]/g, "'")
             .replace(/[\u201C\u201D]/g, '"');
