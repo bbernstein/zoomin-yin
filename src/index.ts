@@ -114,7 +114,7 @@ async function run() {
     // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended. 
     // FIXME: When this works, don't allow a default special command password
     //        meeting: YYYY-MM-DD-HHMM, <MaxLength HHMM>, <Meeting ID>, <Passcode>, <UserName>, <Special Command Password>
-    sendToZoom('/zoom/joinMeeting', "91377439197", "whitefish", "Brian Lefsky");
+    // sendToZoom('/zoom/joinMeeting', "91377439197", "whitefish", "Brian Lefsky");
     commandPassword = "admin";  // FIXME:  Use this special command password for now.
 
     // console.log("going to sleep");
