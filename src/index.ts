@@ -30,7 +30,9 @@ const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-supp
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
+const DEFAULT_PASSWORD = "PASSWORD_NOT_SPECIFIED";  
 
+let commandPassword = DEFAULT_PASSWORD;
 let primaryMode = true;
 let myName = "";
 let myZoomID: Number[] = [0, 0]
@@ -106,6 +108,18 @@ async function run() {
 
     // ask for snapshot of the users who were there first
     sendToZoom('/zoom/list');
+
+    // FIXME: Read in the Config file 
+    // FIXME: Schedule meetings at specified times along with an optional password for Special Commmands
+    // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended. 
+    // FIXME: When this works, don't allow a default special command password
+    //        meeting: YYYY-MM-DD-HHMM, <MaxLength HHMM>, <Meeting ID>, <Passcode>, <UserName>, <Special Command Password>
+    sendToZoom('/zoom/joinMeeting', "91377439197", "whitefish", "Brian Lefsky");
+    commandPassword = "admin";  // FIXME:  Use this special command password for now.
+
+    // console.log("going to sleep");
+    // sleep(10000);
+    // console.log("woke up");
 }
 
 function sendToZoom(message: string, ...args: any[]) {
@@ -187,12 +201,18 @@ function handleChatCommand(message: ZoomOSCMessage) {
         return;
     }
 
-    // only deal with chat messages from a host, else exit
-    // FIXME: Since we don't zoomID info for the users,for now, don't do isHost check for /xlocal commands
     const params = wordify(chatMessage);
+
+    // Process special commands /cohost and /end that require a password
+    if (processSpecial(message.zoomID, params)) {
+        return;
+    }
+
+    // only deal with chat messages from a host, else exit
+    // FIXME: For secondary clients, we don't know the state info for the users.  For now, don't do isHost check for /xlocal commands
     // if (!isHost(message.zoomID)) {
     if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
-        sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
+        sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
         return;
     }
 
@@ -267,13 +287,66 @@ function handleChatCommand(message: ZoomOSCMessage) {
             sendToZoom('/zoom/list');
             break;
         case '/test':
-            // console.log("quicktest: /zoom/clearPin");
-            // sendToZoom("/zoom/clearPin");
+            // console.log("quicktest host", params[1]);
+            // sendToZoom("/zoom/userName/makeCoHost", params[1] );
             break;
         default:
             console.log("handleChatMessage Error: Unimplemented Chat Command");
             sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
     }
+}
+
+function processSpecial(recipientZoomID: number, params: string[]): boolean {
+    let specialCommand = true;
+    switch (params[0]) {
+        case '/cohost':
+            if (checkPassword(recipientZoomID, params.slice(2))) {
+                //check if person exists
+                const person: PersonState[] = getPeopleFromName(params[1]);
+                if (!person) {
+                    console.log(`processSpecial: Error - User "${params[1]}" does not exist`);
+                    sendToZoom('/zoom/zoomID/chat', recipientZoomID, `processSpecial: Error - User "${params[1]}" does not exist`);
+                } else {
+                    sendToZoom('/zoom/userName/makeCoHost', params[1]);
+                }
+            }
+            break;
+        case '/end':
+            if (!isHost(recipientZoomID)) {
+                sendToZoom('/zoom/zoomID/chat', recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
+            } else {
+                if (checkPassword(recipientZoomID, params.slice(1))) {
+                    sendToZoom("/zoom/endMeeting");
+                }
+            }
+            break;
+        default:
+            specialCommand = false;
+    }
+    return (specialCommand);
+}
+
+function checkPassword(recipientZoomID: number, params: string[]): boolean {
+    let passwordValid = false;
+
+    if (commandPassword == DEFAULT_PASSWORD) {
+        console.log(`Error - This meeting is not configured for special command processing`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - This meeting is not configured for special command processing`);
+        return (passwordValid);
+    }
+
+    if (!params[0]) {
+        console.log(`Error - Password required for this command`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Password required for this command`);
+        return (passwordValid);
+    }
+    if (params[0] !== commandPassword) {
+        console.log(`Error - Error - Invalid Password`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Invalid Password`);
+        return (passwordValid);
+    }
+    passwordValid = true;
+    return (passwordValid);
 }
 
 function isHost(zoomid: number): boolean {
@@ -361,7 +434,7 @@ function displayName(recipientZoomID: number, param: string) {
 
     if (!members) {
         console.log(`displayName Error: Name "${ param }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayName Error: Group "${ param }" does not exist`);
+        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayName Error: Name "${ param }" does not exist`);
         return;
     }
 
