@@ -1,4 +1,5 @@
 import * as OSC from 'osc-js';
+import { DateTimeFormatter, Duration, LocalDate, LocalDateTime, LocalTime } from '@js-joda/core';
 
 // OSC server (port to listen to ZoomOSC and clients)
 // Our Listener
@@ -30,9 +31,7 @@ const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-supp
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
-const DEFAULT_PASSWORD = "PASSWORD_NOT_SPECIFIED";  
 
-let commandPassword = DEFAULT_PASSWORD;
 let primaryMode = true;
 let myName = "";
 let myZoomID: Number[] = [0, 0]
@@ -75,13 +74,72 @@ const state: RoomState = {
     everyone: new Map<number, PersonState>()
 }
 
+interface MeetingConfig {
+    name: string;
+    time?: string;
+    date?: string;
+    maxDuration?: string;
+    userName?: string;
+    passCode?: string;
+    codeWord?: string;
+}
+
+interface Config {
+    default: string;
+    meetings: MeetingConfig[];
+}
+
+let config: Config;
+let meetingConfig: MeetingConfig;
+
 // get this thing started
 run()
     .then(() => {
         console.log(`running ...`);
     });
 
+function readConfig(): MeetingConfig {
+    config = require('../config.json');
+    return currentMeeting();
+}
+
+function startMeeting(meetingConfig: MeetingConfig) {
+    sendToZoom('/zoom/joinMeeting', "3896473614", "", "Bernie Bernstein");
+}
+
+function currentMeeting() {
+    const now = LocalDateTime.now();
+    return config.meetings.find(meeting => {
+        // if no time given, then it's not now
+        if (!meeting.time) return false;
+
+        const meetingTime = meeting.time && LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
+        // parse the date, if there is no date, then it's every day, make it today
+        const meetingDate =
+            meeting.date
+                ? LocalDate.parse(meeting.date, DateTimeFormatter.ofPattern('YYYY-MM-DD'))
+                : LocalDate.now();
+        const startTime = LocalDateTime.of(meetingDate, meetingTime);
+
+        // parse the duration. If none, assume it's one hour
+        const duration =
+            meeting.maxDuration
+                ? Duration.parse(meeting.maxDuration)
+                : Duration.ofHours(1);
+
+        // it's current if it's between start end end times (in the event it is exactly the millisecond of the start, it also matches)
+        return now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)));
+    })
+}
+
 async function run() {
+
+
+    // read the config file and get the config for this meeting
+    const thisMeeting: string = process.env.MEETING || config.default;
+    meetingConfig = config.meetings.find(meeting => meeting.name === thisMeeting);
+
+    console.log("config", meetingConfig);
 
     // myName and primaryMode are need to support /xlocal commands
 
@@ -89,6 +147,7 @@ async function run() {
     if (process.argv[2]) {
         myName = process.argv[2];
     }
+
     if (process.argv[3]) {
         primaryMode = (process.argv[3] != "-secondary");
     }
@@ -109,16 +168,27 @@ async function run() {
     // ask for snapshot of the users who were there first
     sendToZoom('/zoom/list');
 
-    // FIXME: Read in the Config file 
+    // FIXME: Read in the Config file
     // FIXME: Schedule meetings at specified times along with an optional password for Special Commmands
-    // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended. 
+    // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended.
     // FIXME: When this works, don't allow a default special command password
     //        meeting: YYYY-MM-DD-HHMM, <MaxLength HHMM>, <Meeting ID>, <Passcode>, <UserName>, <Special Command Password>
+
+    // read the config file and set the current meeting
+    meetingConfig = readConfig();
+
+    // notes about time/date formats
+    // Duration in ISO8601 formats:
+    // duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
+    // Date format: HHHH-MM-DD
+    // Time format: hh:mm (24-hour time)
+    // Duration formation simple form: PT2H15M
+    //    PT: Period Time       2H: two hours       15M: fifteen minutes
+
     // sendToZoom('/zoom/joinMeeting', "91377439197", "whitefish", "Brian Lefsky");
-    commandPassword = "admin";  // FIXME:  Use this special command password for now.
 
     // console.log("going to sleep");
-    // sleep(10000);
+    // await sleep(10000);
     // console.log("woke up");
 }
 
@@ -329,7 +399,7 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
 function checkPassword(recipientZoomID: number, params: string[]): boolean {
     let passwordValid = false;
 
-    if (commandPassword == DEFAULT_PASSWORD) {
+    if (!meetingConfig || !meetingConfig.codeWord) {
         console.log(`Error - This meeting is not configured for special command processing`);
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - This meeting is not configured for special command processing`);
         return (passwordValid);
@@ -340,7 +410,7 @@ function checkPassword(recipientZoomID: number, params: string[]): boolean {
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Password required for this command`);
         return (passwordValid);
     }
-    if (params[0] !== commandPassword) {
+    if (params[0] !== meetingConfig.codeWord) {
         console.log(`Error - Error - Invalid Password`);
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Invalid Password`);
         return (passwordValid);

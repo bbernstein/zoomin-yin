@@ -1,0 +1,22 @@
+{
+  "default": "morning",
+  "meetings": [
+    {
+      "name": "morning",
+      "codeWord": "secret1"
+    },
+    {
+      "name": "evening",
+      "codeWord": "secret2"
+    },
+    {
+      "name": "special",
+      "time": "08:00",
+      "date": "2021-05-14",
+      "maxDuration": "PT1H30M",
+      "userName": "Special User",
+      "passCode": "12345",
+      "codeWord": "secret3"
+    }
+  ]
+}
