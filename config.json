@@ -10,13 +10,13 @@
       "codeWord": "secret2"
     },
     {
-      "name": "special",
-      "meetingID": "111 2222 3333",
-      "meetingPass": "12345",
-      "userName": "Special User",
-      "date": "2021-05-14",
-      "time": "08:00",
-      "maxDuration": "PT1H30M",
+      "name": "Morning Minyan",
+      "meetingID": "913 7743 9197",
+      "meetingPass": "whitefish",
+      "userName": "zoomin-yin",
+      "date": "2021-03-25",
+      "time": "08:45",
+      "maxDuration": "PT1H15M",
       "codeWord": "secret3"
     }
   ]

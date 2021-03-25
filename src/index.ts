@@ -76,11 +76,12 @@ const state: RoomState = {
 
 interface MeetingConfig {
     name: string;
-    time?: string;
-    date?: string;
-    maxDuration?: string;
+    meetingID: string;
+    meetingPass?: string;
     userName?: string;
-    passCode?: string;
+    date?: string;
+    time?: string;
+    maxDuration?: string;
     codeWord?: string;
 }
 
@@ -104,7 +105,8 @@ function readConfig(): MeetingConfig {
 }
 
 function startMeeting(meetingConfig: MeetingConfig) {
-    sendToZoom('/zoom/joinMeeting', "3896473614", "", "Bernie Bernstein");
+    // FIXME: sendToZoom('/zoom/joinMeeting', "3896473614", "", "Bernie Bernstein");
+    sendToZoom('/zoom/joinMeeting', meetingConfig.meetingID, meetingConfig.meetingPass, meetingConfig.userName);
 }
 
 function currentMeeting() {
@@ -134,12 +136,11 @@ function currentMeeting() {
 
 async function run() {
 
-
     // read the config file and get the config for this meeting
-    const thisMeeting: string = process.env.MEETING || config.default;
-    meetingConfig = config.meetings.find(meeting => meeting.name === thisMeeting);
+    // const thisMeeting: string = process.env.MEETING || config.default;
+    // meetingConfig = config.meetings.find(meeting => meeting.name === thisMeeting);
 
-    console.log("config", meetingConfig);
+    // console.log("config", meetingConfig);
 
     // myName and primaryMode are need to support /xlocal commands
 
@@ -165,31 +166,30 @@ async function run() {
     // tell ZoomOSC to listen to updates about the users
     sendToZoom('/zoom/subscribe', 2);
 
-    // ask for snapshot of the users who were there first
-    sendToZoom('/zoom/list');
-
     // FIXME: Read in the Config file
     // FIXME: Schedule meetings at specified times along with an optional password for Special Commmands
     // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended.
     // FIXME: When this works, don't allow a default special command password
     //        meeting: YYYY-MM-DD-HHMM, <MaxLength HHMM>, <Meeting ID>, <Passcode>, <UserName>, <Special Command Password>
 
-    // read the config file and set the current meeting
-    meetingConfig = readConfig();
+    // read the config file and start/join the current meeting (if not already started)
+    if (primaryMode) {
+        meetingConfig = readConfig();
+        console.log("config", meetingConfig);
 
-    // notes about time/date formats
-    // Duration in ISO8601 formats:
-    // duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
-    // Date format: HHHH-MM-DD
-    // Time format: hh:mm (24-hour time)
-    // Duration formation simple form: PT2H15M
-    //    PT: Period Time       2H: two hours       15M: fifteen minutes
+        // notes about time/date formats
+        // Duration in ISO8601 formats:
+        // duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
+        // Date format: HHHH-MM-DD
+        // Time format: hh:mm (24-hour time)
+        // Duration formation simple form: PT2H15M
+        //    PT: Period Time       2H: two hours       15M: fifteen minutes
 
-    // sendToZoom('/zoom/joinMeeting', "91377439197", "whitefish", "Brian Lefsky");
+        startMeeting(meetingConfig);
+    }
 
-    // console.log("going to sleep");
-    // await sleep(10000);
-    // console.log("woke up");
+    // ask for snapshot of the users who were there first
+    sendToZoom('/zoom/list');
 }
 
 function sendToZoom(message: string, ...args: any[]) {
