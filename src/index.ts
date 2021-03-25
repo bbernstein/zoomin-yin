@@ -119,7 +119,7 @@ function currentMeeting() {
         // parse the date, if there is no date, then it's every day, make it today
         const meetingDate =
             meeting.date
-                ? LocalDate.parse(meeting.date, DateTimeFormatter.ofPattern('YYYY-MM-DD'))
+                ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
                 : LocalDate.now();
         const startTime = LocalDateTime.of(meetingDate, meetingTime);
 
