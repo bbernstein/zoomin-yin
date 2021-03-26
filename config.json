@@ -10,13 +10,33 @@
       "codeWord": "secret2"
     },
     {
-      "name": "Morning Minyan",
+      "name": "test meeting 1",
       "meetingID": "913 7743 9197",
       "meetingPass": "whitefish",
       "userName": "zoomin-yin",
       "date": "2021-03-25",
-      "time": "08:45",
-      "maxDuration": "PT1H15M",
+      "time": "19:30",
+      "maxDuration": "PT1H30M",
+      "codeWord": "secret3"
+    },
+    {
+      "name": "test meeting 2",
+      "meetingID": "913 7743 9197",
+      "meetingPass": "whitefish",
+      "userName": "zoomin-yin",
+      "date": "2021-03-26",
+      "time": "07:00",
+      "maxDuration": "PT1H30M",
+      "codeWord": "secret3"
+    },
+    {
+      "name": "test meeting 3",
+      "meetingID": "913 7743 9197",
+      "meetingPass": "whitefish",
+      "userName": "zoomin-yin",
+      "date": "2021-03-27",
+      "time": "19:30",
+      "maxDuration": "PT1H30M",
       "codeWord": "secret3"
     }
   ]

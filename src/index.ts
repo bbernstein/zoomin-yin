@@ -31,6 +31,9 @@ const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-supp
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
+const DEFAULT_DURATION = 1;
+const SKIP_CURRENT = true;
+const DONT_SKIP_CURRENT = false;
 
 let primaryMode = true;
 let myName = "";
@@ -99,18 +102,46 @@ run()
         console.log(`running ...`);
     });
 
-function readConfig(): MeetingConfig {
+function readConfig(skipCurrent: boolean): MeetingConfig {
     config = require('../config.json');
-    return currentMeeting();
+    return nextMeeting(SKIP_CURRENT);
 }
 
 function startMeeting(meetingConfig: MeetingConfig) {
-    // FIXME: sendToZoom('/zoom/joinMeeting', "3896473614", "", "Bernie Bernstein");
-    sendToZoom('/zoom/joinMeeting', meetingConfig.meetingID, meetingConfig.meetingPass, meetingConfig.userName);
+
+    if (!meetingConfig) {
+        console.log("startMeeting: No meeting to schedule at this time");
+        return;
+    }
+
+    const now = LocalDateTime.now();
+
+    const meetingTime = LocalTime.parse(meetingConfig.time, DateTimeFormatter.ofPattern('HH:mm'));
+    const meetingDate = LocalDate.parse(meetingConfig.date, DateTimeFormatter.ISO_LOCAL_DATE)
+ 
+    const startTime = LocalDateTime.of(meetingDate, meetingTime);
+    const duration = Duration.parse(meetingConfig.maxDuration);
+
+    // Start/Join meeting if it's the current meeting
+    if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
+        console.log("startMeeting: Start/Join Meeting", meetingConfig);
+        //FIXME:  Remove spaces from meetingID until ZoomOSC starts to ignore them
+        const temp = String(meetingConfig.meetingID).replace(/ /g, "");
+        sendToZoom('/zoom/joinMeeting', temp, meetingConfig.meetingPass, meetingConfig.userName);
+        // sendToZoom('/zoom/joinMeeting', meetingConfig.meetingID, meetingConfig.meetingPass, meetingConfig.userName);
+    } else {
+        // FIXME: Add code to stop meeting if maxDuration is reached 
+        // Schedule the start of the next meeting
+        console.log("startMeeting: Scheduling the next meeting", meetingConfig);
+    }
 }
 
-function currentMeeting() {
+function nextMeeting(skipCurrent: boolean): MeetingConfig {
     const now = LocalDateTime.now();
+
+    let earliestMeeting: MeetingConfig;
+    let earliestStartTime;
+
     return config.meetings.find(meeting => {
         // if no time given, then it's not now
         if (!meeting.time) return false;
@@ -127,20 +158,24 @@ function currentMeeting() {
         const duration =
             meeting.maxDuration
                 ? Duration.parse(meeting.maxDuration)
-                : Duration.ofHours(1);
+                : Duration.ofHours(DEFAULT_DURATION);
 
-        // it's current if it's between start end end times (in the event it is exactly the millisecond of the start, it also matches)
-        return now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)));
+        // Ignore meeting entries that have passed
+        if (now.isAfter(startTime.plus(duration))) return false;
+
+        // FIXME: add code to skip current meeting
+
+        // keep the earliest meeting startTime
+        if (!earliestStartTime || startTime.isBefore(earliestStartTime)) {
+            earliestMeeting = meeting;
+            earliestStartTime = startTime;
+        }
+
+        return earliestMeeting;
     })
 }
 
 async function run() {
-
-    // read the config file and get the config for this meeting
-    // const thisMeeting: string = process.env.MEETING || config.default;
-    // meetingConfig = config.meetings.find(meeting => meeting.name === thisMeeting);
-
-    // console.log("config", meetingConfig);
 
     // myName and primaryMode are need to support /xlocal commands
 
@@ -166,26 +201,24 @@ async function run() {
     // tell ZoomOSC to listen to updates about the users
     sendToZoom('/zoom/subscribe', 2);
 
-    // FIXME: Read in the Config file
-    // FIXME: Schedule meetings at specified times along with an optional password for Special Commmands
-    // FIXME:    After specified Max time for the meeting elapses, end meeting if not already ended.
-    // FIXME: When this works, don't allow a default special command password
-    //        meeting: YYYY-MM-DD-HHMM, <MaxLength HHMM>, <Meeting ID>, <Passcode>, <UserName>, <Special Command Password>
-
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
-        meetingConfig = readConfig();
-        console.log("config", meetingConfig);
+ 
+        // Config file
+        // Notes about time / date formats
+        //   Duration in ISO8601 formats:
+        //   duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
+        //   Date format: HHHH-MM-DD
+        //   Time format: hh:mm (24-hour time)
+        //   Duration formation simple form: PT2H15M
+        //      PT: Period Time       2H: two hours       15M: fifteen minutes
 
-        // notes about time/date formats
-        // Duration in ISO8601 formats:
-        // duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
-        // Date format: HHHH-MM-DD
-        // Time format: hh:mm (24-hour time)
-        // Duration formation simple form: PT2H15M
-        //    PT: Period Time       2H: two hours       15M: fifteen minutes
-
+        // Start/Join meeting or schedule the next meeting
+        meetingConfig = readConfig(DONT_SKIP_CURRENT);
         startMeeting(meetingConfig);
+
+        // FIXME: Periodically check if config file has changed and reschedule next meeting if necessary.
+
     }
 
     // ask for snapshot of the users who were there first
@@ -912,10 +945,18 @@ function handleList(message: ZoomOSCMessage) {
     addZoomIDToName(message.userName, message.zoomID);
 }
 
-function handleMeetingStatus(_message: ZoomOSCMessage) {
+function handleMeetingStatus(message: ZoomOSCMessage) {
     state.names.clear();
     state.groups.clear();
     state.everyone.clear();
+
+    // FIXME: On meeting status offline - 
+    //   Cancel meeting Max Duration 
+    //   Schedule the next meeting skipping the current meeting
+    if (Number(message.params[0]) == 1) {
+        // meetingConfig = readConfig(SKIP_CURRENT);
+        // startMeeting(meetingConfig);
+    }
 }
 
 function setupOscListeners() {
