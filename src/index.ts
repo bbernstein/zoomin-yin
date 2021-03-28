@@ -1,5 +1,13 @@
+import * as fs  from 'fs';
 import * as OSC from 'osc-js';
-import { DateTimeFormatter, Duration, LocalDate, LocalDateTime, LocalTime } from '@js-joda/core';
+import {
+    ChronoUnit,
+    DateTimeFormatter,
+    Duration,
+    LocalDate,
+    LocalDateTime,
+    LocalTime
+} from '@js-joda/core';
 
 // OSC server (port to listen to ZoomOSC and clients)
 // Our Listener
@@ -31,9 +39,18 @@ const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-supp
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
-const DEFAULT_DURATION = 1;
-const SKIP_CURRENT = true;
-const DONT_SKIP_CURRENT = false;
+const DEFAULT_DURATION = "PT1H";
+// const SKIP_CURRENT = true;
+// const DONT_SKIP_CURRENT = false;
+
+// for testing, fill in the date/time for "now" to see what happens, otherwise set it to null
+// (comment out one of these two)
+// const fakeNow = LocalDateTime.of(
+//     LocalDate.parse("2021-04-21", DateTimeFormatter.ISO_LOCAL_DATE),
+//     LocalTime.parse("09:15", DateTimeFormatter.ofPattern('HH:mm'))
+// );
+const fakeNow = null;
+
 
 let primaryMode = true;
 let myName = "";
@@ -86,6 +103,8 @@ interface MeetingConfig {
     time?: string;
     maxDuration?: string;
     codeWord?: string;
+    startDateTime?: LocalDateTime;
+    endDateTime?: LocalDateTime;
 }
 
 interface Config {
@@ -93,8 +112,7 @@ interface Config {
     meetings: MeetingConfig[];
 }
 
-let config: Config;
-let meetingConfig: MeetingConfig;
+let gCurrentMeetingConfig: MeetingConfig;
 
 // get this thing started
 run()
@@ -102,9 +120,35 @@ run()
         console.log(`running ...`);
     });
 
-function readConfig(skipCurrent: boolean): MeetingConfig {
-    config = require('../config.json');
-    return nextMeeting(SKIP_CURRENT);
+// use this so we can test with fake "current" times easily (there are other ways, but its a little complicated)
+function getNow(): LocalDateTime {
+    return fakeNow || LocalDateTime.now();
+}
+
+async function readConfig(): Promise<Config> {
+    const configFile = fs.readFileSync('config.json');
+    const config = JSON.parse(configFile.toString());
+    calculateMeetingTimes(config.meetings);
+    return config;
+}
+
+function calculateMeetingTimes(meetings: MeetingConfig[]) {
+    const today = getNow().toLocalDate();
+    meetings.forEach(meeting => {
+        if (!meeting.time) return;
+        const date = meeting.date
+            ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
+            : today;
+        const time = LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
+        meeting.startDateTime = LocalDateTime.of(date, time);
+
+        const duration =
+            meeting.maxDuration
+                ? Duration.parse(meeting.maxDuration)
+                : Duration.parse(DEFAULT_DURATION);
+
+        meeting.endDateTime = meeting.startDateTime.plus(duration);
+    });
 }
 
 function startMeeting(meetingConfig: MeetingConfig) {
@@ -114,65 +158,94 @@ function startMeeting(meetingConfig: MeetingConfig) {
         return;
     }
 
-    const now = LocalDateTime.now();
+    const now = getNow();
 
     const meetingTime = LocalTime.parse(meetingConfig.time, DateTimeFormatter.ofPattern('HH:mm'));
     const meetingDate = LocalDate.parse(meetingConfig.date, DateTimeFormatter.ISO_LOCAL_DATE)
- 
+
     const startTime = LocalDateTime.of(meetingDate, meetingTime);
     const duration = Duration.parse(meetingConfig.maxDuration);
 
     // Start/Join meeting if it's the current meeting
     if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
         console.log("startMeeting: Start/Join Meeting", meetingConfig);
-        //FIXME:  Remove spaces from meetingID until ZoomOSC starts to ignore them
-        const temp = String(meetingConfig.meetingID).replace(/ /g, "");
-        sendToZoom('/zoom/joinMeeting', temp, meetingConfig.meetingPass, meetingConfig.userName);
-        // sendToZoom('/zoom/joinMeeting', meetingConfig.meetingID, meetingConfig.meetingPass, meetingConfig.userName);
+        const spacelessMeetingId = String(meetingConfig.meetingID).replace(/ /g, "");
+        if (meetingConfig.meetingPass) {
+            sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.meetingPass, meetingConfig.userName);
+        } else {
+            sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.userName);
+        }
     } else {
-        // FIXME: Add code to stop meeting if maxDuration is reached 
+        // FIXME: Add code to stop meeting if maxDuration is reached
         // Schedule the start of the next meeting
         console.log("startMeeting: Scheduling the next meeting", meetingConfig);
     }
+
+    // keep this global so we can check its codeword and things like that
+    gCurrentMeetingConfig = meetingConfig;
 }
 
-function nextMeeting(skipCurrent: boolean): MeetingConfig {
-    const now = LocalDateTime.now();
+// return -1 if meeting1 is lower, 1 if meeting2 is lower, 0 if they are equal
+// if they are equal, then prioritize the one with with a date field included
+function compareMeetingDates(meeting1, meeting2): number {
+    const startCompare = meeting1.startDateTime.compareTo(meeting2.startDateTime)
+    // the aren't the same time, return the comparison value
+    if (startCompare !== 0) return startCompare;
 
-    let earliestMeeting: MeetingConfig;
-    let earliestStartTime;
+    if (meeting1.date) {
+        if (meeting2.date)
+            // they both had a date field, they are a conflict (equal)
+            return 0;
+        // meeting1 had a date, but not meeting2, -1 causes meeting1 to come first
+        return -1;
+    }
+    if (meeting2.date)
+        // meeting1 didn't have a date, but meeting 2 does, return 1 so meeting2 goes first
+        return 1;
+    // neither had a date equal zero (conflict)
+    return 0;
+}
 
-    return config.meetings.find(meeting => {
-        // if no time given, then it's not now
-        if (!meeting.time) return false;
+/**
+ * Return the meeting that was scheduled to have started in the past but hasn't yet ended
+ * If there are multiple meetings now, it will return the first one that has today's date
+ */
+function currentMeeting(meetings: MeetingConfig[]): MeetingConfig {
+    const now = getNow();
+    const allCurrentMeetings = meetings
 
-        const meetingTime = meeting.time && LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
-        // parse the date, if there is no date, then it's every day, make it today
-        const meetingDate =
-            meeting.date
-                ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
-                : LocalDate.now();
-        const startTime = LocalDateTime.of(meetingDate, meetingTime);
+        // only include meetings that had already started and haven't yet ended
+        .filter(meeting => meeting.startDateTime.compareTo(now) <= 0 && meeting.endDateTime.compareTo(now) >= 0)
 
-        // parse the duration. If none, assume it's one hour
-        const duration =
-            meeting.maxDuration
-                ? Duration.parse(meeting.maxDuration)
-                : Duration.ofHours(DEFAULT_DURATION);
+        // ones that have a date take priority over ones that don't
+        .sort(compareMeetingDates);
 
-        // Ignore meeting entries that have passed
-        if (now.isAfter(startTime.plus(duration))) return false;
+    // if there was at least one match, return the first. They are sorted so that dated ones come before defaults
+    return allCurrentMeetings.length > 0 && allCurrentMeetings[0];
+}
 
-        // FIXME: add code to skip current meeting
+/**
+ * Return the next meeting that hasn't yet started.
+ * If there are multiple meetings coming up at the same time, it will choose the one that is scheduled for today.
+ * TODO: this isn't used right now
+ */
+function nextMeeting(meetings: MeetingConfig[]): MeetingConfig {
+    const now = getNow();
 
-        // keep the earliest meeting startTime
-        if (!earliestStartTime || startTime.isBefore(earliestStartTime)) {
-            earliestMeeting = meeting;
-            earliestStartTime = startTime;
-        }
+    // do all comparisons based on END date since we sometimes want to include current meeting
+    const allFutureMeetings = meetings
 
-        return earliestMeeting;
-    })
+        // filter to only include possible future meetings (or current)
+        .filter(meeting => {
+
+            // only include meetings that haven't started yet
+            return meeting.startDateTime && (meeting.startDateTime.compareTo(now) >= 0);
+        })
+
+        // sort in order so the next one is the first
+        .sort(compareMeetingDates);
+
+    return allFutureMeetings.length > 0 && allFutureMeetings[0];
 }
 
 async function run() {
@@ -203,7 +276,7 @@ async function run() {
 
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
- 
+
         // Config file
         // Notes about time / date formats
         //   Duration in ISO8601 formats:
@@ -213,17 +286,22 @@ async function run() {
         //   Duration formation simple form: PT2H15M
         //      PT: Period Time       2H: two hours       15M: fifteen minutes
 
-        // Start/Join meeting or schedule the next meeting
-        meetingConfig = readConfig(DONT_SKIP_CURRENT);
-        startMeeting(meetingConfig);
-
-        // FIXME: Periodically check if config file has changed and reschedule next meeting if necessary.
-
+        await checkForUpdates();
     }
 
     // ask for snapshot of the users who were there first
     sendToZoom('/zoom/list');
 }
+
+async function checkForUpdates() {
+    const config = await readConfig();
+    const meeting = currentMeeting(config.meetings);
+    startMeeting(meeting);
+
+    // check again in 30 seconds
+    setTimeout(checkForUpdates, 30000);
+}
+
 
 function sendToZoom(message: string, ...args: any[]) {
     console.log("Sending to Zoom: %s, %s", message, args);
@@ -405,10 +483,10 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
         case '/cohost':
             if (checkPassword(recipientZoomID, params.slice(2))) {
                 //check if person exists
-                const person: PersonState[] = getPeopleFromName(params[1]);
-                if (!person) {
-                    console.log(`processSpecial: Error - User "${params[1]}" does not exist`);
-                    sendToZoom('/zoom/zoomID/chat', recipientZoomID, `processSpecial: Error - User "${params[1]}" does not exist`);
+                const personExists = getPeopleFromName(params[1]).length > 0;
+                if (!personExists) {
+                    console.log(`processSpecial: Error - User "${ params[1] }" does not exist`);
+                    sendToZoom('/zoom/zoomID/chat', recipientZoomID, `processSpecial: Error - User "${ params[1] }" does not exist`);
                 } else {
                     sendToZoom('/zoom/userName/makeCoHost', params[1]);
                 }
@@ -432,7 +510,7 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
 function checkPassword(recipientZoomID: number, params: string[]): boolean {
     let passwordValid = false;
 
-    if (!meetingConfig || !meetingConfig.codeWord) {
+    if (!gCurrentMeetingConfig || !gCurrentMeetingConfig.codeWord) {
         console.log(`Error - This meeting is not configured for special command processing`);
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - This meeting is not configured for special command processing`);
         return (passwordValid);
@@ -443,7 +521,7 @@ function checkPassword(recipientZoomID: number, params: string[]): boolean {
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Password required for this command`);
         return (passwordValid);
     }
-    if (params[0] !== meetingConfig.codeWord) {
+    if (params[0] !== gCurrentMeetingConfig.codeWord) {
         console.log(`Error - Error - Invalid Password`);
         sendToZoom('/zoom/zoomID/chat', recipientZoomID, `Error - Invalid Password`);
         return (passwordValid);
@@ -885,19 +963,19 @@ function handleNameChanged(message: ZoomOSCMessage) {
     }
 }
 
-let lastJoinTime: number = 0;
+let lastJoinTime: LocalDateTime;
 
 function handleOnline(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
 
     // FIXME: ZoomOSC is not issuing a /list after a member joins.
     //        Workaround this for now by sending a /list command after first join or if 30 sec passed since last member joined
-    let currentTime = Date.now();
-    if (!lastJoinTime || ((currentTime - lastJoinTime) > 30000)) {
-        console.log(`handleOnline Workaround: lastJoinTime = ${ lastJoinTime }, currentTime = ${ currentTime }`);
+    let now = getNow();
+    if (!lastJoinTime || (ChronoUnit.SECONDS.between(lastJoinTime, now) > 30)) {
+        console.log(`handleOnline Workaround: lastJoinTime = ${ lastJoinTime.toString() }, currentTime = ${ now.toString() }`);
         sendToZoom('/zoom/list');
     }
-    lastJoinTime = currentTime;
+    lastJoinTime = now;
 
     if (person) return;
 
@@ -950,11 +1028,11 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
     state.groups.clear();
     state.everyone.clear();
 
-    // FIXME: On meeting status offline - 
-    //   Cancel meeting Max Duration 
+    // FIXME: On meeting status offline -
+    //   Cancel meeting Max Duration
     //   Schedule the next meeting skipping the current meeting
     if (Number(message.params[0]) == 1) {
-        // meetingConfig = readConfig(SKIP_CURRENT);
+        // meetingConfig = await readConfig(SKIP_CURRENT);
         // startMeeting(meetingConfig);
     }
 }
