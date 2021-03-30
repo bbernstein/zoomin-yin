@@ -1,4 +1,4 @@
-import * as fs  from 'fs';
+import * as fs from 'fs';
 import * as OSC from 'osc-js';
 import {
     ChronoUnit,
@@ -101,10 +101,12 @@ interface MeetingConfig {
     userName?: string;
     date?: string;
     time?: string;
+    duration?: string;
     maxDuration?: string;
     codeWord?: string;
     startDateTime?: LocalDateTime;
     endDateTime?: LocalDateTime;
+    maxEndDateTime?: LocalDateTime;
 }
 
 interface Config {
@@ -128,27 +130,99 @@ function getNow(): LocalDateTime {
 async function readConfig(): Promise<Config> {
     const configFile = fs.readFileSync('config.json');
     const config = JSON.parse(configFile.toString());
-    calculateMeetingTimes(config.meetings);
+    config.meetings = calculateMeetingTimes(config.meetings);
     return config;
 }
 
-function calculateMeetingTimes(meetings: MeetingConfig[]) {
+function calculateMeetingTimes(meetings: MeetingConfig[]): MeetingConfig[] {
     const today = getNow().toLocalDate();
-    meetings.forEach(meeting => {
-        if (!meeting.time) return;
-        const date = meeting.date
-            ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
-            : today;
-        const time = LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
-        meeting.startDateTime = LocalDateTime.of(date, time);
 
-        const duration =
-            meeting.maxDuration
-                ? Duration.parse(meeting.maxDuration)
-                : Duration.parse(DEFAULT_DURATION);
+    /**
+     * Make a list of meetings that include their LocalDateTime versions.
+     * Sorted by start time
+     * With all conflicts removed or reported.
+     * If a default meeting (no date given) overlaps with a dated meeting, it is removed
+     * If two dated or default meetings overlap, they are reported with warning
+     */
+    const orderedMeetings =
+        meetings.map(meeting => {
+            if (!meeting.time) return;
+            const date = meeting.date
+                ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
+                : today;
+            const time = LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
+            meeting.startDateTime = LocalDateTime.of(date, time);
 
-        meeting.endDateTime = meeting.startDateTime.plus(duration);
+            // calculate endDateTime from the start and duration
+            const duration =
+                meeting.duration
+                    ? Duration.parse(meeting.duration)
+                    : Duration.parse(DEFAULT_DURATION);
+            meeting.endDateTime = meeting.startDateTime.plus(duration);
+
+            // calculate maxEndDateTime from the start and maxDuration (default is duration from above)
+            const maxDuration =
+                meeting.maxDuration
+                    ? Duration.parse(meeting.maxDuration)
+                    : duration;
+            meeting.maxEndDateTime = meeting.startDateTime.plus(maxDuration);
+
+            return meeting;
+        })
+
+            // sort them by startDates
+            .sort(compareMeetingDates);
+
+    // get only meetings that either have a date or are undated with no overlapping dated meetings
+    const filteredMeetings = orderedMeetings
+        .filter(meeting => {
+            // don't filter out one with a date
+            if (meeting.date) return true;
+
+            // find a meeting that has a date && overlaps this meeting (if so, filter it out)
+            const overlappingMeeting = orderedMeetings.find(otherMeeting => {
+                return otherMeeting.date && overlaps(meeting, otherMeeting)
+            });
+            if (overlappingMeeting) {
+                // found an overlap, report a warning
+                console.error(`WARNING: ignoring default meeting: [${ toShortString(meeting) }]. Overridden by [${ toShortString(overlappingMeeting) }]`);
+            }
+            return !overlappingMeeting;
+        });
+
+    // no changes, just report any overlaps remaining between meetings of same priority
+    filteredMeetings.forEach(meeting => {
+        const overlappingMeetings = filteredMeetings.filter(otherMeeting =>
+            meeting !== otherMeeting &&
+            meeting.startDateTime.compareTo(otherMeeting.startDateTime) >= 0 &&
+            overlaps(meeting, otherMeeting));
+
+        if (overlappingMeetings.length > 0) {
+            // report all of the overlaps with this meeting (could repeat when multiple start at same time
+            overlappingMeetings.forEach(om => {
+                console.error(`WARNING: conflicting meetings: [${ toShortString(meeting) }] overlaps [${ toShortString(om) }]`);
+            })
+        }
     });
+
+    return filteredMeetings;
+}
+
+/**
+ * This is a simple string to identify a meeting
+ *
+ * TODO: You may want to add more fields. This is for output in a single line.
+ * Another function could be written to show all the details
+ */
+function toShortString(meeting: MeetingConfig): string {
+    return `${ meeting.name } / ${ meeting.date ? meeting.date : "UNDATED" } / ${ meeting.time }`;
+}
+
+
+function overlaps(meeting1: MeetingConfig, meeting2: MeetingConfig): boolean {
+    // note: if one starts at the same time the other ends, it's still no overlap (hence "or equals")
+    return meeting1.startDateTime.compareTo(meeting2.endDateTime) <= 0 &&
+        meeting2.startDateTime.compareTo(meeting1.endDateTime) <= 0;
 }
 
 function startMeeting(meetingConfig: MeetingConfig) {
@@ -160,10 +234,7 @@ function startMeeting(meetingConfig: MeetingConfig) {
 
     const now = getNow();
 
-    const meetingTime = LocalTime.parse(meetingConfig.time, DateTimeFormatter.ofPattern('HH:mm'));
-    const meetingDate = LocalDate.parse(meetingConfig.date, DateTimeFormatter.ISO_LOCAL_DATE)
-
-    const startTime = LocalDateTime.of(meetingDate, meetingTime);
+    const startTime = meetingConfig.startDateTime;
     const duration = Duration.parse(meetingConfig.maxDuration);
 
     // Start/Join meeting if it's the current meeting
@@ -186,24 +257,8 @@ function startMeeting(meetingConfig: MeetingConfig) {
 }
 
 // return -1 if meeting1 is lower, 1 if meeting2 is lower, 0 if they are equal
-// if they are equal, then prioritize the one with with a date field included
 function compareMeetingDates(meeting1, meeting2): number {
-    const startCompare = meeting1.startDateTime.compareTo(meeting2.startDateTime)
-    // the aren't the same time, return the comparison value
-    if (startCompare !== 0) return startCompare;
-
-    if (meeting1.date) {
-        if (meeting2.date)
-            // they both had a date field, they are a conflict (equal)
-            return 0;
-        // meeting1 had a date, but not meeting2, -1 causes meeting1 to come first
-        return -1;
-    }
-    if (meeting2.date)
-        // meeting1 didn't have a date, but meeting 2 does, return 1 so meeting2 goes first
-        return 1;
-    // neither had a date equal zero (conflict)
-    return 0;
+    return meeting1.startDateTime.compareTo(meeting2.startDateTime)
 }
 
 /**
@@ -232,7 +287,6 @@ function currentMeeting(meetings: MeetingConfig[]): MeetingConfig {
 function nextMeeting(meetings: MeetingConfig[]): MeetingConfig {
     const now = getNow();
 
-    // do all comparisons based on END date since we sometimes want to include current meeting
     const allFutureMeetings = meetings
 
         // filter to only include possible future meetings (or current)
