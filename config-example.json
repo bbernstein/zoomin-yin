@@ -2,20 +2,14 @@
   "default": "morning",
   "meetings": [
     {
-      "name": "morning",
-      "codeWord": "secret1"
-    },
-    {
-      "name": "evening",
-      "codeWord": "secret2"
-    },
-    {
       "name": "special",
+      "exclude": "false",
       "meetingID": "111 2222 3333",
       "meetingPass": "12345",
       "userName": "Special User",
       "date": "2021-05-14",
       "time": "08:00",
+      "duration": "PT1H",
       "maxDuration": "PT1H30M",
       "codeWord": "secret3"
     }
