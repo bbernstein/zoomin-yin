@@ -175,15 +175,15 @@ function calculateMeetingTimes(meetings: MeetingConfig[]): MeetingConfig[] {
             meeting.endDateTime = meeting.startDateTime.plus(duration);
 
             // calculate maxEndDateTime from the start and maxDuration (default is duration from above)
-            // maxDuration must be >= duration 
-            // FIXME : can't quite figure out what the syntax should be here.
-            //         (meeting.maxDuration && (Duration.parse(meeting.maxDuration).isafter(duration)))
             const maxDuration =
                 meeting.maxDuration
                     ? Duration.parse(meeting.maxDuration)
                     : duration;
             meeting.maxEndDateTime = meeting.startDateTime.plus(maxDuration);
 
+            // maxEndDateTime must be after the scheduled endDateTime
+            if (meeting.maxEndDateTime.isBefore(meeting.endDateTime)) meeting.maxEndDateTime = meeting.endDateTime;
+      
             // Use the default codeWord if one isn't specified in the config for this meeting.
             if (!meeting.codeWord) meeting.codeWord = gDefaultCodeWord;
 
