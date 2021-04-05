@@ -1,4 +1,13 @@
+import * as fs from 'fs';
 import * as OSC from 'osc-js';
+import {
+    ChronoUnit,
+    DateTimeFormatter,
+    Duration,
+    LocalDate,
+    LocalDateTime,
+    LocalTime
+} from '@js-joda/core';
 
 // OSC server (port to listen to ZoomOSC and clients)
 // Our Listener
@@ -30,6 +39,20 @@ const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-supp
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
+const DEFAULT_DURATION = "PT1H";
+const CONFIG_POLL_TIME = 15000;
+
+// const SKIP_CURRENT = true;
+// const DONT_SKIP_CURRENT = false;
+
+// for testing, fill in the date/time for "now" to see what happens, otherwise set it to null
+// (comment out one of these two)
+// const fakeNow = LocalDateTime.of(
+//     LocalDate.parse("2021-04-21", DateTimeFormatter.ISO_LOCAL_DATE),
+//     LocalTime.parse("09:15", DateTimeFormatter.ofPattern('HH:mm'))
+// );
+const fakeNow = null;
+
 
 let primaryMode = true;
 let myName = "";
@@ -73,11 +96,226 @@ const state: RoomState = {
     everyone: new Map<number, PersonState>()
 }
 
+interface MeetingConfig {
+    name: string;
+    exclude?: string;
+    meetingID: string;
+    meetingPass?: string;
+    userName?: string;
+    date?: string;
+    time?: string;
+    duration?: string;
+    maxDuration?: string;
+    codeWord?: string;
+    startDateTime?: LocalDateTime;
+    endDateTime?: LocalDateTime;
+    maxEndDateTime?: LocalDateTime;
+}
+
+interface Config {
+    default: string;
+    defaultCodeWord: string;
+    meetings: MeetingConfig[];
+}
+
+let gCurrentMeetingConfig: MeetingConfig;
+let gDefaultCodeWord: string;
+let disableStartMeeting = false;
+let configLastModified: number;
+let configFileChecked = false;   // Used to limit numnber of warnings/errors in calculateMeeting
+
 // get this thing started
 run()
     .then(() => {
-        console.log(`running ...`);
+        sendMessage(null,`running ...`);
     });
+
+// use this so we can test with fake "current" times easily (there are other ways, but its a little complicated)
+function getNow(): LocalDateTime {
+    return fakeNow || LocalDateTime.now();
+}
+
+async function readConfig(): Promise<Config> {
+    const configFile = fs.readFileSync('config.json');
+    const config = JSON.parse(configFile.toString());
+    gDefaultCodeWord = config.defaultCodeWord;
+    config.meetings = calculateMeetingTimes(config.meetings);
+    return config;
+}
+
+function calculateMeetingTimes(meetings: MeetingConfig[]): MeetingConfig[] {
+    const today = getNow().toLocalDate();
+
+    /**
+     * Make a list of meetings that include their LocalDateTime versions.
+     * Sorted by start time
+     * With all conflicts removed or reported.
+     * If a default meeting (no date given) overlaps with a dated meeting, it is removed
+     * If two dated or default meetings overlap, they are reported with warning
+     */
+    const orderedMeetings =
+        meetings.map(meeting => {
+
+            if (!meeting.codeWord) {
+                meeting.codeWord = gDefaultCodeWord;
+            }
+
+            if (!meeting.time) return;
+            const date = meeting.date
+                ? LocalDate.parse(meeting.date, DateTimeFormatter.ISO_LOCAL_DATE)
+                : today;
+            const time = LocalTime.parse(meeting.time, DateTimeFormatter.ofPattern('HH:mm'));
+            meeting.startDateTime = LocalDateTime.of(date, time);
+
+            // calculate endDateTime from the start and duration
+            const duration =
+                meeting.duration
+                    ? Duration.parse(meeting.duration)
+                    : Duration.parse(DEFAULT_DURATION);
+            meeting.endDateTime = meeting.startDateTime.plus(duration);
+
+            // calculate maxEndDateTime from the start and maxDuration (default is duration from above)
+            const maxDuration =
+                meeting.maxDuration
+                    ? Duration.parse(meeting.maxDuration)
+                    : duration;
+            meeting.maxEndDateTime = meeting.startDateTime.plus(maxDuration);
+
+            // maxEndDateTime must be after the scheduled endDateTime
+            if (meeting.maxEndDateTime.isBefore(meeting.endDateTime)) meeting.maxEndDateTime = meeting.endDateTime;
+      
+            // Use the default codeWord if one isn't specified in the config for this meeting.
+            if (!meeting.codeWord) meeting.codeWord = gDefaultCodeWord;
+
+            return meeting;
+        })
+
+            // sort them by startDates
+            .sort(compareMeetingDates);
+
+    // get only meetings that either have a date or are undated with no overlapping dated meetings
+    const filteredMeetings = orderedMeetings
+        .filter(meeting => {
+            // don't filter out one with a date
+            if (meeting.date) return true;
+
+            // find a meeting that has a date && overlaps this meeting (if so, filter it out)
+            const overlappingMeeting = orderedMeetings.find(otherMeeting => {
+                return otherMeeting.date && overlaps(meeting, otherMeeting)
+            });
+            if (!configFileChecked && overlappingMeeting) {
+                // found an overlap, report a warning
+                console.error(`WARNING: ignoring default meeting: [${ toShortString(meeting) }]. Overridden by [${ toShortString(overlappingMeeting) }]`);
+            }
+            return !overlappingMeeting && !meeting.exclude;
+        });
+
+    // no changes, just report any overlaps remaining between meetings of same priority
+    filteredMeetings.forEach(meeting => {
+        const overlappingMeetings = filteredMeetings.filter(otherMeeting =>
+            meeting !== otherMeeting &&
+            meeting.startDateTime.compareTo(otherMeeting.startDateTime) >= 0 &&
+            overlaps(meeting, otherMeeting));
+
+        if (!configFileChecked && overlappingMeetings.length > 0) {
+            // report all of the overlaps with this meeting (could repeat when multiple start at same time
+            overlappingMeetings.forEach(om => {
+                console.error(`WARNING: conflicting meetings: [${ toShortString(meeting) }] overlaps [${ toShortString(om) }]`);
+            })
+        }
+    });
+
+    return filteredMeetings;
+}
+
+/**
+ * This is a simple string to identify a meeting
+ *
+ * TODO: You may want to add more fields. This is for output in a single line.
+ * Another function could be written to show all the details
+ */
+function toShortString(meeting: MeetingConfig): string {
+    return `${ meeting.name } / ${ meeting.date ? meeting.date : "UNDATED" } / ${ meeting.time }`;
+}
+
+
+function overlaps(meeting1: MeetingConfig, meeting2: MeetingConfig): boolean {
+    // note: if one starts at the same time the other ends, it's still no overlap (hence "or equals")
+    return meeting1.startDateTime.compareTo(meeting2.endDateTime) <= 0 &&
+        meeting2.startDateTime.compareTo(meeting1.endDateTime) <= 0;
+}
+
+function startMeeting(meetingConfig: MeetingConfig) {
+
+    if (!meetingConfig || (meetingConfig.exclude == "true")) return;
+
+    const now = getNow();
+
+    const startTime = meetingConfig.startDateTime;
+    const duration = Duration.parse(meetingConfig.maxDuration);
+    // Start/Join meeting if it's the current meeting
+    if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
+        sendMessage(null,"startMeeting: Start/Join Meeting", meetingConfig);
+        const spacelessMeetingId = String(meetingConfig.meetingID).replace(/ /g, "");
+        if (meetingConfig.meetingPass) {
+            sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.meetingPass, meetingConfig.userName);
+        } else {
+            sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.userName);
+        }
+    }
+
+    // keep this global so we can check its codeword and things like that
+    gCurrentMeetingConfig = meetingConfig;
+
+    // Stop trying to start a new meeting until this one has ended.
+    disableStartMeeting = true;
+}
+
+// return -1 if meeting1 is lower, 1 if meeting2 is lower, 0 if they are equal
+function compareMeetingDates(meeting1, meeting2): number {
+    return meeting1.startDateTime.compareTo(meeting2.startDateTime)
+}
+
+/**
+ * Return the meeting that was scheduled to have started in the past but hasn't yet ended
+ * If there are multiple meetings now, it will return the first one that has today's date
+ */
+function currentMeeting(meetings: MeetingConfig[]): MeetingConfig {
+    const now = getNow();
+    const allCurrentMeetings = meetings
+
+        // only include meetings that had already started and haven't yet ended
+        .filter(meeting => meeting.startDateTime.compareTo(now) <= 0 && meeting.endDateTime.compareTo(now) >= 0)
+
+        // ones that have a date take priority over ones that don't
+        .sort(compareMeetingDates);
+
+    // if there was at least one match, return the first. They are sorted so that dated ones come before defaults
+    return allCurrentMeetings.length > 0 && allCurrentMeetings[0];
+}
+
+/**
+ * Return the next meeting that hasn't yet started.
+ * If there are multiple meetings coming up at the same time, it will choose the one that is scheduled for today.
+ * TODO: this isn't used right now
+ */
+function nextMeeting(meetings: MeetingConfig[]): MeetingConfig {
+    const now = getNow();
+
+    const allFutureMeetings = meetings
+
+        // filter to only include possible future meetings (or current)
+        .filter(meeting => {
+
+            // only include meetings that haven't started yet
+            return meeting.startDateTime && (meeting.startDateTime.compareTo(now) >= 0);
+        })
+
+        // sort in order so the next one is the first
+        .sort(compareMeetingDates);
+
+    return allFutureMeetings.length > 0 && allFutureMeetings[0];
+}
 
 async function run() {
 
@@ -87,34 +325,103 @@ async function run() {
     if (process.argv[2]) {
         myName = process.argv[2];
     }
+
     if (process.argv[3]) {
         primaryMode = (process.argv[3] != "-secondary");
     }
 
-    console.log(`running in ${ primaryMode ? "Primary" : "Secondary" } mode`);
-    console.log(`running as user "${ myName }"`);
+    sendMessage(null,`running in ${ primaryMode ? "Primary" : "Secondary" } mode`);
+    sendMessage(null,`running as user "${ myName }"`);
 
     // prepare to listen to OSC
     setupOscListeners();
 
     // start listening
     osc.open();
-    console.log(`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
+    sendMessage(null,`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
 
     // tell ZoomOSC to listen to updates about the users
     sendToZoom('/zoom/subscribe', 2);
 
-    // ask for snapshot of the users who were there first
-    sendToZoom('/zoom/list');
+    // read the config file and start/join the current meeting (if not already started)
+    if (primaryMode) {
+
+        // Config file
+        // Notes about time / date formats
+        //   Duration in ISO8601 formats:
+        //   duration format: https://www.digi.com/resources/documentation/digidocs/90001437-13/reference/r_iso_8601_duration_format.htm
+        //   Date format: HHHH-MM-DD
+        //   Time format: hh:mm (24-hour time)
+        //   Duration formation simple form: PT2H15M
+        //      PT: Period Time       2H: two hours       15M: fifteen minutes
+
+        await checkForUpdates();
+    }
+ } 
+
+async function checkForUpdates() {
+
+    const now = getNow();
+
+    // Manage flags to indicate when the config file should be read
+    // Once a meeting is started, stop trying to start a new one until the current meeting has ended. 
+
+    // If the config file has been modified, clear start meeting flags and see if there is a meeting to start
+    const configFileStats = fs.statSync('config.json');
+    const mtimeMs = configFileStats.mtimeMs;
+    if (!configLastModified || (mtimeMs !== configLastModified)) {
+        sendMessage(null,"readConfig: config file has been modified")
+        configLastModified = mtimeMs;
+        disableStartMeeting = false;
+        gCurrentMeetingConfig = null;
+        configFileChecked = false;
+    }
+
+    // Start/Join the current meeting if one exists
+    if (!disableStartMeeting) {
+        const config = await readConfig();
+        const meeting = currentMeeting(config.meetings);
+
+        startMeeting(meeting);
+
+        // Set flag to mask future Warnings/Errors in calculateMeeting
+        configFileChecked = true;
+    }
+
+    // After the scheduled end time of the current meeting it's OK to start the next meeting
+    if (gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.endDateTime)) {
+        disableStartMeeting = false;
+    }
+
+    // Stop the current meeting if it has reached the maxDuration
+    if (gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.maxEndDateTime)) {
+        sendToZoom("/zoom/endMeeting");
+        disableStartMeeting = false;
+        gCurrentMeetingConfig = null;
+    }
+
+    // check again after the specified poll time
+    setTimeout(checkForUpdates, CONFIG_POLL_TIME);
 }
 
 function sendToZoom(message: string, ...args: any[]) {
-    console.log("Sending to Zoom: %s, %s", message, args);
+    sendMessage(null,`Sending to Zoom: ${message} ${args}`);
     try {
         osc.send(new OSC.Message(message, ...args));
     } catch (e) {
         console.error("Failed to sendToZoom", e);
     }
+}
+
+function sendMessage(recipientZoomID: number, message: string, ...args: any[]) {
+    const today = getNow().toLocaleString().substring(0, 19)
+        .replace(/T/g, " ");
+
+    console.log(today, message, ...args);
+
+    if (!recipientZoomID) return;
+
+    sendToZoom('/zoom/zoomID/chat', recipientZoomID, message, ...args);
 }
 
 /**
@@ -138,23 +445,6 @@ function parseZoomOSCMessage(message: any) {
  * Received a chat messages. Do something with it. If it starts with '/', then do something with it
  * @param message the message received
  */
-
-const HELPINFO = '\
-/h | /help            \n\
-/grp [options] <name> \n\
-  [-l | -la | -d | -da]\n\
-/list   : Update State \n\
-/ma	    : Mute All     \n\
-/mpin <group> : Multipin\n\
-/mute <group>          \n\
-/mx [grp]  : MA Except \n\
-/names   : List Names  \n\
-/pin <group>           \n\
-/reset  : Reset State  \n\
-/state  : Show State   \n\
-/ua     : Unmute All   \n\
-/umute <group>         \n\
-';
 
 function handleChatMessage(message: ZoomOSCMessage) {
     const chatMessage = message.params[0];
@@ -187,12 +477,18 @@ function handleChatCommand(message: ZoomOSCMessage) {
         return;
     }
 
-    // only deal with chat messages from a host, else exit
-    // FIXME: Since we don't zoomID info for the users,for now, don't do isHost check for /xlocal commands
     const params = wordify(chatMessage);
+
+    // Process special commands /cohost and /end that require a password
+    if (processSpecial(message.zoomID, params)) {
+        return;
+    }
+
+    // only deal with chat messages from a host, else exit
+    // FIXME: For secondary clients, we don't know the state info for the users.  For now, don't do isHost check for /xlocal commands
     // if (!isHost(message.zoomID)) {
     if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
-        sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Only Hosts and Co-hosts can issue Chat Commands");
+        sendMessage(message.zoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
         return;
     }
 
@@ -245,14 +541,9 @@ function handleChatCommand(message: ZoomOSCMessage) {
             sendToZoom('/zoom/list');
             break;
         case '/state':   // Display full state on console
-            console.log("handleChatMessage state");
-            console.log(`  myName: ${ myName }`);
-            console.log(`  myZoomID: ${ myZoomID }`);
-            console.log(`state:`, state);
+            sendMessage(null, `\n state:`, state);
             break;
-        case '/h':
-        case '/help':
-            sendToZoom('/zoom/zoomID/chat', message.zoomID, HELPINFO);
+
             break;
         case '/xremote':
             executeRemote(message, params);
@@ -267,13 +558,64 @@ function handleChatCommand(message: ZoomOSCMessage) {
             sendToZoom('/zoom/list');
             break;
         case '/test':
-            // console.log("quicktest: /zoom/clearPin");
-            // sendToZoom("/zoom/clearPin");
+            // console.log("quicktest host", params[1]);
+            // sendToZoom("/zoom/userName/makeCoHost", params[1] );
             break;
         default:
-            console.log("handleChatMessage Error: Unimplemented Chat Command");
-            sendToZoom('/zoom/zoomID/chat', message.zoomID, "Error: Unimplemented Chat Command");
+            sendMessage(message.zoomID, "Error: Unimplemented Chat Command");
     }
+}
+
+function processSpecial(recipientZoomID: number, params: string[]): boolean {
+    let specialCommand = true;
+    switch (params[0]) {
+        case '/cohost':
+            if (checkPassword(recipientZoomID, params.slice(2))) {
+                //check if person exists
+                const personExists = getPeopleFromName(params[1]).length > 0;
+                if (!personExists) {
+                    sendMessage(recipientZoomID, `processSpecial: Error - User "${ params[1] }" does not exist`);
+                } else {
+                    sendToZoom('/zoom/userName/makeCoHost', params[1]);
+                }
+            }
+            break;
+        case '/end':
+            if (!isHost(recipientZoomID)) {
+                sendMessage(recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
+            } else {
+                if (checkPassword(recipientZoomID, params.slice(1))) {
+                    sendToZoom("/zoom/endMeeting");
+                }
+            }
+            break;
+        default:
+            specialCommand = false;
+    }
+    return (specialCommand);
+}
+
+function checkPassword(recipientZoomID: number, params: string[]): boolean {
+    let passwordValid = false;
+
+ //   if (!gCurrentMeetingConfig || !gCurrentMeetingConfig.codeWord) {
+    if (!gCurrentMeetingConfig) {
+
+        sendMessage(recipientZoomID, `Error - This meeting is not configured for special command processing`);
+        return (passwordValid);
+    }
+
+    if (!params[0]) {
+        sendMessage(recipientZoomID, `Error - Password required for this command`);
+        return (passwordValid);
+    }
+
+    if (params[0] !== gCurrentMeetingConfig.codeWord) {
+        sendMessage(recipientZoomID, `Error - Invalid Password`);
+        return (passwordValid);
+    }
+    passwordValid = true;
+    return (passwordValid);
 }
 
 function isHost(zoomid: number): boolean {
@@ -301,8 +643,7 @@ function createGroup(recipientZoomID: number, params: string[]) {
             if (name === SKIP_PC_STRING) {
                 zoomidList.push(SKIP_PC);
             } else {
-                console.log(`createGroup: Error - User "${ name }" does not exist`);
-                sendToZoom('/zoom/zoomID/chat', recipientZoomID, `createGroup: Error - User "${ name }" does not exist`);
+                sendMessage(recipientZoomID, `createGroup: Error - User "${ name }" does not exist`);
             }
         } else {
             zoomidList.push(...curUser.map(user => user.zoomID));
@@ -316,8 +657,7 @@ function deleteGroup(recipientZoomID: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
-        console.log(`deleteGroup Error: Group "${ param }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${ param }" does not exist`);
+        sendMessage(recipientZoomID, `displayGroup Error: Group "${ param }" does not exist`);
         return;
     }
 
@@ -328,8 +668,7 @@ function displayGroup(recipientZoomID: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
-        console.log(`displayGroup Error: Group "${ param }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayGroup Error: Group "${ param }" does not exist`);
+        sendMessage(recipientZoomID, `displayGroup Error: Group "${ param }" does not exist`);
         return;
     }
 
@@ -344,8 +683,7 @@ function displayGroup(recipientZoomID: number, param: string) {
         }
     });
 
-    console.log("displayGroup :", buffer);
-    sendToZoom('/zoom/zoomID/chat', recipientZoomID, buffer);
+    sendMessage(recipientZoomID, buffer);
 }
 
 
@@ -360,8 +698,7 @@ function displayName(recipientZoomID: number, param: string) {
     const members = state.names.get(param);
 
     if (!members) {
-        console.log(`displayName Error: Name "${ param }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `displayName Error: Group "${ param }" does not exist`);
+        sendMessage(recipientZoomID, `displayName Error: Name "${ param }" does not exist`);
         return;
     }
 
@@ -372,8 +709,7 @@ function displayName(recipientZoomID: number, param: string) {
         buffer = buffer.concat("\"" + name + "\"\n");
     });
 
-    console.log("displayName :", buffer);
-    sendToZoom('/zoom/zoomID/chat', recipientZoomID, buffer);
+    sendMessage(recipientZoomID, buffer);
 }
 
 function displayAllNames(recipientZoomID: number) {
@@ -412,8 +748,7 @@ function manageGroups(recipientZoomID: number, params: string[]) {
                 state.groups.clear();
                 break;
             default:
-                console.log("manageGroups Error: Unimplemented Groups Sub-Command");
-                sendToZoom('/zoom/zoomID/chat', recipientZoomID, "Error: Unimplemented Groups Sub-Command");
+                sendMessage(recipientZoomID, "Error: Unimplemented Groups Sub-Command");
         }
         return;
     }
@@ -431,15 +766,13 @@ function setPin(recipientZoomID: number, params: string[]) {
 
     // Make sure LS-SUPPORT group exists
     if (!supportPCs) {
-        console.log(`setPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
+        sendMessage(recipientZoomID, `setPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
         return;
     }
 
     // Make sure group exists
     if (!currentGroup) {
-        console.log(`setPin Error: Group "${ params[1] }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin Error: Group "${ params[1] }" does not exist`);
+        sendMessage(recipientZoomID, `setPin Error: Group "${ params[1] }" does not exist`);
         return;
     }
 
@@ -454,17 +787,14 @@ function setPin(recipientZoomID: number, params: string[]) {
         if (targetPC.zoomID == SKIP_PC) return;
 
         if (!person) {
-            console.log(`setPin: Error - User "${ person.zoomID }" does not exist`);
-            sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setPin: Error - User "${ person.zoomID }" does not exist`);
+            sendMessage(recipientZoomID, `setPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
             // Check if I'm the target
             if (targetPC.userName == myName) {
-                console.log(`setPin: /zoom/userName/pin2, ${ name }`);
                 sendToZoom("/zoom/userName/pin2", name);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
-                console.log('setPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/userName/pin2 "${ name }"`);
                 sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/userName/pin2 "${ name }"`);
             }
         }
@@ -482,28 +812,23 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
     // Make sure device exists
     const device = getPeopleFromName(multipinDevice);
     if (!device) {
-        console.log(`setMultiPin Error: User "${ multipinDevice }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: User "${ multipinDevice }" does not exist`);
+        sendMessage(recipientZoomID, `setMultiPin Error: User "${ multipinDevice }" does not exist`);
         return;
     }
     // Make sure LS-SUPPORT group exists
     if (!supportPCs) {
-        console.log(`setMultiPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
+        sendMessage(recipientZoomID, `setMultiPin Error: LS-SUPPORT Group "${ LS_SUPPORT_GRP }" does not exist`);
         return;
     }
     // Make sure device is in LS-SUPPORT group
     const gotit = supportPCs.filter(id => id == device[0].zoomID);
     if (gotit.length == 0) {
-        console.log(`setMultiPin Error: Device: "${ multipinDevice }" is not included in Group: "${ LS_SUPPORT_GRP }"`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID,
-            `setMultiPin Error: Device: "${ multipinDevice }" is not included in Group: "${ LS_SUPPORT_GRP }"`);
+        sendMessage(recipientZoomID, `setMultiPin Error: Device: "${ multipinDevice }" is not included in Group: "${ LS_SUPPORT_GRP }"`);
         return;
     }
     // Make sure Multipin group exists
     if (!currentGroup) {
-        console.log(`setMultiPin Error: Group "${ params[1] }" does not exist`);
-        sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin Error: Group "${ params[1] }" does not exist`);
+        sendMessage(recipientZoomID, `setMultiPin Error: Group "${ params[1] }" does not exist`);
         return;
     }
 
@@ -511,10 +836,9 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
 
     // Clear all Pins before adding new group
     if (targetPC.userName == myName) {
-        console.log("setMultiPin: /zoom/me/clearPin");
+        sendMessage(null, `setMultiPin:`);
         sendToZoom("/zoom/me/clearPin");
     } else {
-        console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/me/clearPin`);
         sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/me/clearPin`);
     }
 
@@ -525,16 +849,13 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
         const name = person.userName;
 
         if (!person) {
-            console.log(`setMultiPin: Error - User "${ person.zoomID }" does not exist`);
-            sendToZoom('/zoom/zoomID/chat', recipientZoomID, `setMultiPin: Error - User "${ person.zoomID }" does not exist`);
+            sendMessage(recipientZoomID, `setMultiPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
             if (targetPC.userName == myName) {
-                console.log(`setMultiPin: /zoom/userName/addPin, ${ name }`);
                 sendToZoom("/zoom/userName/addPin", name);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 //        Also, not sure if addPin works with a list of zoomID's
-                console.log('setMultiPin: /zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${ targetPC.userName } /zoom/userName/addPin "${ name }"`);
                 sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${ targetPC.userName } /zoom/userName/addPin "${ name }"`);
             }
         }
@@ -595,7 +916,7 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // }
 
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
-    console.log(`executeLocal myName = "${ myName }"`, params);
+    sendMessage(null,`executeLocal myName = "${ myName }"`, params);
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
@@ -699,7 +1020,7 @@ function handleNameChanged(message: ZoomOSCMessage) {
     // update the names table
     removeZoomIDFromName(person.userName, message.zoomID);
     addZoomIDToName(message.userName, message.zoomID);
-    console.log(`handleuserNameChanged zoomID: ${ message.zoomID }, oldName: ${ person.userName }, newName: ${ message.userName }`);
+    sendMessage(null,`handleuserNameChanged zoomID: ${ message.zoomID }, oldName: ${ person.userName }, newName: ${ message.userName }`);
 
     person.userName = message.userName;
 
@@ -709,19 +1030,19 @@ function handleNameChanged(message: ZoomOSCMessage) {
     }
 }
 
-let lastJoinTime: number = 0;
+let lastJoinTime: LocalDateTime;
 
 function handleOnline(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
 
     // FIXME: ZoomOSC is not issuing a /list after a member joins.
     //        Workaround this for now by sending a /list command after first join or if 30 sec passed since last member joined
-    let currentTime = Date.now();
-    if (!lastJoinTime || ((currentTime - lastJoinTime) > 30000)) {
-        console.log(`handleOnline Workaround: lastJoinTime = ${ lastJoinTime }, currentTime = ${ currentTime }`);
+    let now = getNow();
+    if (!lastJoinTime || (ChronoUnit.SECONDS.between(lastJoinTime, now) > 30)) {
+       // console.log(`handleOnline Workaround: lastJoinTime = ${ lastJoinTime.toString() }, currentTime = ${ now.toString() }`);
         sendToZoom('/zoom/list');
     }
-    lastJoinTime = currentTime;
+    lastJoinTime = now;
 
     if (person) return;
 
@@ -734,7 +1055,7 @@ function handleOnline(message: ZoomOSCMessage) {
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
-    console.log("handleOnline message, person", message, person);
+    sendMessage(null,"handleOnline message, person", message, person);
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
@@ -743,7 +1064,7 @@ function handleOffline(message: ZoomOSCMessage) {
 
     if (person) return;
 
-    console.log("handleOffline message, person", message, person);
+    sendMessage(null,"handleOffline message, person", message, person);
     state.everyone.delete(person.zoomID);
     removeZoomIDFromName(message.userName, message.zoomID);
 
@@ -769,10 +1090,18 @@ function handleList(message: ZoomOSCMessage) {
     addZoomIDToName(message.userName, message.zoomID);
 }
 
-function handleMeetingStatus(_message: ZoomOSCMessage) {
+function handleMeetingStatus(message: ZoomOSCMessage) {
     state.names.clear();
     state.groups.clear();
     state.everyone.clear();
+
+    sendMessage(null,"handleMeetingStatus", message.targetID);
+ 
+    // When meeting starts - ask for snapshot of the users who were there first
+    // Note: Normal message parameters don't apply here, use the first parameter. 
+    if (Number(message.targetID) == 1) {
+        sendToZoom('/zoom/list');
+    }
 }
 
 function setupOscListeners() {

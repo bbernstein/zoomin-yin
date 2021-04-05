@@ -3,3 +3,7 @@ node_modules/
 *.iml
 build/
 .vs/
+
+config.json
+*.iml
+
