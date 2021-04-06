@@ -268,7 +268,12 @@ function startMeeting(meetingConfig: MeetingConfig) {
     const duration = Duration.parse(meetingConfig.duration);
     // Start/Join meeting if it's the current meeting
     if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
-        sendMessage(null,"startMeeting: Start/Join Meeting", meetingConfig);
+        sendMessage(null, "startMeeting: Start/Join Meeting", meetingConfig);
+
+        if (!ZoomOSCInfo.isPro) {
+            sendMessage(null, "Error: Unable to start meeting - Must be running ZoomOSC Pro");
+        }
+
         const spacelessMeetingId = String(meetingConfig.meetingID).replace(/ /g, "");
         if (meetingConfig.meetingPass) {
             sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.meetingPass, meetingConfig.userName);
@@ -358,6 +363,8 @@ async function run() {
 
     // get ZoomOSCInfo
     sendToZoom('/zoom/ping', "ZoomOSC Information");
+    await sleep(2000);
+
 
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
@@ -413,6 +420,9 @@ async function checkForUpdates() {
 
     // Stop the current meeting if it has reached the maxDuration
     if (gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.maxEndDateTime)) {
+        if (!ZoomOSCInfo.isPro) {
+            sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
+        }
         sendToZoom("/zoom/endMeeting");
         disableStartMeeting = false;
         gCurrentMeetingConfig = null;
@@ -610,6 +620,9 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
                 sendMessage(recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
             } else {
                 if (checkPassword(recipientZoomID, params.slice(1))) {
+                    if (!ZoomOSCInfo.isPro) {
+                        sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
+                    }
                     sendToZoom("/zoom/endMeeting");
                 }
             }
@@ -1126,17 +1139,17 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
 function handlePongReply(message: ZoomOSCMessage) {
 
     ZoomOSCInfo = {
-        pingArg: message.params[0],
-        zoomOSCversion: String(message.params[1]),
-        subscribeMode: Number(message.params[2]),
-        galTrackMode: Number(message.params[3]),
-        callStatus: Number(message.params[4]),
-        numTargets: Number(message.params[5]),
-        numUsers: Number(message.params[6]),
-        isPro: Boolean(message.params[7])
+        pingArg: message.userName,
+        zoomOSCversion: String(message.galIndex),
+        subscribeMode: Number(message.zoomID),
+        galTrackMode: Number(message.params[0]),
+        callStatus: Number(message.params[1]),
+        numTargets: Number(message.params[2]),
+        numUsers: Number(message.params[3]),
+        isPro: Boolean(message.params[4])
     }
-
-    console.log("pong", message, ZoomOSCInfo);
+ 
+    console.log("ZoomOSC Information", ZoomOSCInfo);
 }
 
 
