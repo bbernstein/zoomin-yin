@@ -89,6 +89,18 @@ interface ZoomOSCMessage {
     params: string;
 }
 
+// The ZoomOSC incoming user message with params broken out
+interface PongReply {
+    pingArg: any;
+    zoomOSCversion: string;
+    subscribeMode: number;
+    galTrackMode: number;
+    callStatus: number;
+    numTargets: number;
+    numUsers: number;
+    isPro: boolean;
+}
+
 // The value of the room state
 const state: RoomState = {
     names: new Map<string, number[]>(),
@@ -118,6 +130,7 @@ interface Config {
     meetings: MeetingConfig[];
 }
 
+let ZoomOSCInfo: PongReply;
 let gCurrentMeetingConfig: MeetingConfig;
 let gDefaultCodeWord: string;
 let disableStartMeeting = false;
@@ -255,7 +268,12 @@ function startMeeting(meetingConfig: MeetingConfig) {
     const duration = Duration.parse(meetingConfig.duration);
     // Start/Join meeting if it's the current meeting
     if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
-        sendMessage(null,"startMeeting: Start/Join Meeting", meetingConfig);
+        sendMessage(null, "startMeeting: Start/Join Meeting", meetingConfig);
+
+        if (!ZoomOSCInfo.isPro) {
+            sendMessage(null, "Error: Unable to start meeting - Must be running ZoomOSC Pro");
+        }
+
         const spacelessMeetingId = String(meetingConfig.meetingID).replace(/ /g, "");
         if (meetingConfig.meetingPass) {
             sendToZoom('/zoom/joinMeeting', spacelessMeetingId, meetingConfig.meetingPass, meetingConfig.userName);
@@ -343,6 +361,11 @@ async function run() {
     // tell ZoomOSC to listen to updates about the users
     sendToZoom('/zoom/subscribe', 2);
 
+    // get ZoomOSCInfo
+    sendToZoom('/zoom/ping', "ZoomOSC Information");
+    await sleep(2000);
+
+
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
 
@@ -359,7 +382,7 @@ async function run() {
     }
  } 
 
-let numberJoined: number;
+let numberJoined = 0;
 
 async function checkForUpdates() {
 
@@ -397,6 +420,9 @@ async function checkForUpdates() {
 
     // Stop the current meeting if it has reached the maxDuration
     if (gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.maxEndDateTime)) {
+        if (!ZoomOSCInfo.isPro) {
+            sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
+        }
         sendToZoom("/zoom/endMeeting");
         disableStartMeeting = false;
         gCurrentMeetingConfig = null;
@@ -404,7 +430,7 @@ async function checkForUpdates() {
 
     // FIXME: ZoomOSC is not issuing a /list after a member joins. 
     //        For now issue a /list command each time there is a change in the number of meeting members
-    if (!numberJoined || (numberJoined != state.names.size)) {
+    if ((state.names.size > 0) && (numberJoined != state.names.size)) {
         sendToZoom('/zoom/list');
     }
     numberJoined = state.names.size;
@@ -493,6 +519,11 @@ function handleChatCommand(message: ZoomOSCMessage) {
         return;
     }
 
+    // only /xlocal command is allowed in Secondary mode
+    if (!primaryMode && !(params[0] == "/xlocal")) {
+        return;
+    }
+
     // only deal with chat messages from a host, else exit
     // FIXME: For secondary clients, we don't know the state info for the users.  For now, don't do isHost check for /xlocal commands
     // if (!isHost(message.zoomID)) {
@@ -504,11 +535,6 @@ function handleChatCommand(message: ZoomOSCMessage) {
     // slash-command, do something with it
     // const params = wordify(chatMessage);
     console.log("args", params);
-
-    // only /xlocal command is allowed on Secondary mode
-    if (!primaryMode && !(params[0] == "/xlocal")) {
-        return;
-    }
 
     switch (params[0]) {
         case '/mx':  // mute all except members of group - No option => use LS_SUPPORT_GRP
@@ -594,6 +620,9 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
                 sendMessage(recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
             } else {
                 if (checkPassword(recipientZoomID, params.slice(1))) {
+                    if (!ZoomOSCInfo.isPro) {
+                        sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
+                    }
                     sendToZoom("/zoom/endMeeting");
                 }
             }
@@ -803,9 +832,7 @@ function setPin(recipientZoomID: number, params: string[]) {
                 sendToZoom("/zoom/zoomID/pin2", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-                //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/pin2 "${ zoomid }"`);
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
-
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/pin2 ${ zoomid }`);
             }
         }
     });
@@ -862,13 +889,11 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
             sendMessage(recipientZoomID, `setMultiPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
             if (targetPC.userName == myName) {
-                // sendToZoom("/zoom/userName/addPin", name);
                 sendToZoom("/zoom/zoomID/addPin", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 //        Also, not sure if addPin works with a list of zoomID's
-                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/addPin "${name}"`);
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${ targetPC.userName } /zoom/zoomID/addPin "${ zoomid }"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/addPin ${ zoomid }`);
             }
         }
     });
@@ -1056,7 +1081,13 @@ function handleOnline(message: ZoomOSCMessage) {
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
-    sendMessage(null,"handleOnline message, person", message, person);
+    sendMessage(null, "handleOnline message, person", message, person);
+
+    // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
+    //        For now manually mute people upon entry after 25 have joined the meeting
+    if (state.names.size > 25) {
+        sendToZoom('/zoom/zoomID/mute', person.zoomID);
+    }
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
@@ -1105,6 +1136,23 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
     }
 }
 
+function handlePongReply(message: ZoomOSCMessage) {
+
+    ZoomOSCInfo = {
+        pingArg: message.userName,
+        zoomOSCversion: String(message.galIndex),
+        subscribeMode: Number(message.zoomID),
+        galTrackMode: Number(message.params[0]),
+        callStatus: Number(message.params[1]),
+        numTargets: Number(message.params[2]),
+        numUsers: Number(message.params[3]),
+        isPro: Boolean(message.params[4])
+    }
+ 
+    console.log("ZoomOSC Information", ZoomOSCInfo);
+}
+
+
 function setupOscListeners() {
 
     // convenient code to print every incoming messagse
@@ -1113,6 +1161,7 @@ function setupOscListeners() {
     // });
 
     osc.on('/zoomosc/meetingStatus', async message => handleMeetingStatus(parseZoomOSCMessage(message)));
+    osc.on('/zoomosc/pong', async message => handlePongReply(parseZoomOSCMessage(message)));
 
     osc.on('/zoomosc/user/chat', async message => handleChatMessage(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/user/unMute', async message => handleUnmute(parseZoomOSCMessage(message)));

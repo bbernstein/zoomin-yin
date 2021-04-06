@@ -1,5 +1,6 @@
 {
   "default": "morning",
+  "defaultCodeWord": "supersecret",
   "meetings": [
     {
       "name": "special",
