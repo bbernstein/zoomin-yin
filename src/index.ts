@@ -252,7 +252,7 @@ function startMeeting(meetingConfig: MeetingConfig) {
     const now = getNow();
 
     const startTime = meetingConfig.startDateTime;
-    const duration = Duration.parse(meetingConfig.maxDuration);
+    const duration = Duration.parse(meetingConfig.duration);
     // Start/Join meeting if it's the current meeting
     if (now.isEqual(startTime) || (now.isAfter(startTime) && now.isBefore(startTime.plus(duration)))) {
         sendMessage(null,"startMeeting: Start/Join Meeting", meetingConfig);
@@ -359,6 +359,8 @@ async function run() {
     }
  } 
 
+let numberJoined: number;
+
 async function checkForUpdates() {
 
     const now = getNow();
@@ -399,6 +401,13 @@ async function checkForUpdates() {
         disableStartMeeting = false;
         gCurrentMeetingConfig = null;
     }
+
+    // FIXME: ZoomOSC is not issuing a /list after a member joins. 
+    //        For now issue a /list command each time there is a change in the number of meeting members
+    if (!numberJoined || (numberJoined != state.names.size)) {
+        sendToZoom('/zoom/list');
+    }
+    numberJoined = state.names.size;
 
     // check again after the specified poll time
     setTimeout(checkForUpdates, CONFIG_POLL_TIME);
@@ -572,7 +581,7 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
         case '/cohost':
             if (checkPassword(recipientZoomID, params.slice(2))) {
                 //check if person exists
-                const personExists = getPeopleFromName(params[1]).length > 0;
+                const personExists = getPeopleFromName(params[1]);
                 if (!personExists) {
                     sendMessage(recipientZoomID, `processSpecial: Error - User "${ params[1] }" does not exist`);
                 } else {
@@ -791,11 +800,12 @@ function setPin(recipientZoomID: number, params: string[]) {
         } else {
             // Check if I'm the target
             if (targetPC.userName == myName) {
-                sendToZoom("/zoom/userName/pin2", name);
+                sendToZoom("/zoom/zoomID/pin2", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-                //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/userName/pin2 "${ name }"`);
+                //sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/pin2 "${ zoomid }"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.zoomID} /zoom/zoomID/pin2 ${zoomid}`);
+
             }
         }
     });
@@ -852,11 +862,13 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
             sendMessage(recipientZoomID, `setMultiPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
             if (targetPC.userName == myName) {
-                sendToZoom("/zoom/userName/addPin", name);
+                // sendToZoom("/zoom/userName/addPin", name);
+                sendToZoom("/zoom/zoomID/addPin", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 //        Also, not sure if addPin works with a list of zoomID's
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${ targetPC.userName } /zoom/userName/addPin "${ name }"`);
+                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${targetPC.userName} /zoom/userName/addPin "${name}"`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal ${ targetPC.userName } /zoom/zoomID/addPin "${ zoomid }"`);
             }
         }
     });
@@ -1030,19 +1042,8 @@ function handleNameChanged(message: ZoomOSCMessage) {
     }
 }
 
-let lastJoinTime: LocalDateTime;
-
 function handleOnline(message: ZoomOSCMessage) {
     let person: PersonState = state.everyone.get(message.zoomID);
-
-    // FIXME: ZoomOSC is not issuing a /list after a member joins.
-    //        Workaround this for now by sending a /list command after first join or if 30 sec passed since last member joined
-    let now = getNow();
-    if (!lastJoinTime || (ChronoUnit.SECONDS.between(lastJoinTime, now) > 30)) {
-       // console.log(`handleOnline Workaround: lastJoinTime = ${ lastJoinTime.toString() }, currentTime = ${ now.toString() }`);
-        sendToZoom('/zoom/list');
-    }
-    lastJoinTime = now;
 
     if (person) return;
 
