@@ -359,6 +359,8 @@ async function run() {
     }
  } 
 
+let numberJoined = 0;
+
 async function checkForUpdates() {
 
     const now = getNow();
@@ -399,6 +401,13 @@ async function checkForUpdates() {
         disableStartMeeting = false;
         gCurrentMeetingConfig = null;
     }
+
+    // FIXME: ZoomOSC is not issuing a /list after a member joins. 
+    //        For now issue a /list command each time there is a change in the number of meeting members
+    if (!numberJoined || (numberJoined != state.names.size)) {
+        sendToZoom('/zoom/list');
+    }
+    numberJoined = state.names.size;
 
     // check again after the specified poll time
     setTimeout(checkForUpdates, CONFIG_POLL_TIME);
@@ -1055,7 +1064,13 @@ function handleOnline(message: ZoomOSCMessage) {
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
-    sendMessage(null,"handleOnline message, person", message, person);
+    sendMessage(null, "handleOnline message, person", message, person);
+
+    // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
+    //        For now manually mute people upon entry after 25 have joined the meeting
+    if (state.names.size > 25) {
+        sendToZoom('/zoom/zoomID/mute', person.zoomID);
+    }
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
