@@ -514,13 +514,13 @@ function handleChatCommand(message: ZoomOSCMessage) {
 
     const params = wordify(chatMessage);
 
-    // Process special commands /cohost and /end that require a password
-    if (processSpecial(message.zoomID, params)) {
+    // only /xlocal command is allowed in Secondary mode
+    if (!primaryMode && !(params[0] == "/xlocal")) {
         return;
     }
 
-    // only /xlocal command is allowed in Secondary mode
-    if (!primaryMode && !(params[0] == "/xlocal")) {
+    // Process special commands /cohost and /end that require a password
+    if (processSpecial(message.zoomID, params)) {
         return;
     }
 
@@ -829,10 +829,12 @@ function setPin(recipientZoomID: number, params: string[]) {
         } else {
             // Check if I'm the target
             if (targetPC.userName == myName) {
-                sendToZoom("/zoom/zoomID/pin2", zoomid);
+                sendToZoom("/zoom/userName/pin2", name);
+                // sendToZoom("/zoom/zoomID/pin2", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/pin2 ${ zoomid }`);
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/userName/pin2 "${name}"`);
+                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/zoomID/pin2 ${zoomid}`);
             }
         }
     });
@@ -957,6 +959,14 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
+
+        // FIXME : needs work
+        // Sub-command to mirror the result of the /zoomosc/list command that was executed on the primary script
+        // if (params[2] == "-mirrorlist") {
+        //     const newMessage = { params[3], ...params.slice(4) };
+        //     handleList(newMessage);
+        // }
+
         // FIXME: Not sure why this doesn't compile - Probably because the result of the slice could be null
         // sendToZoom(...params.slice(2));
         sendToZoom(params[2], ...params.slice(3));
@@ -1120,6 +1130,13 @@ function handleList(message: ZoomOSCMessage) {
         person.videoOn = Boolean(message.params[4]);
     }
     addZoomIDToName(message.userName, message.zoomID);
+
+    // FIXME : needs work
+    // Send an /xlocal -mirror list command to all members of the ls-support group
+    // const supportPCs = state.groups.get(LS_SUPPORT_GRP);
+    // if (supportPCs) {
+    //     sendToZoom('/zoom/users/zoomID/chat', supportPCs, `/xlocal -mirrorlist, ${message}`);
+    // }
 }
 
 function handleMeetingStatus(message: ZoomOSCMessage) {
