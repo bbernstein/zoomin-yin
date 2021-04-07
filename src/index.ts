@@ -196,7 +196,7 @@ function calculateMeetingTimes(meetings: MeetingConfig[]): MeetingConfig[] {
 
             // maxEndDateTime must be after the scheduled endDateTime
             if (meeting.maxEndDateTime.isBefore(meeting.endDateTime)) meeting.maxEndDateTime = meeting.endDateTime;
-      
+
             // Use the default codeWord if one isn't specified in the config for this meeting.
             if (!meeting.codeWord) meeting.codeWord = gDefaultCodeWord;
 
@@ -380,7 +380,7 @@ async function run() {
 
         await checkForUpdates();
     }
- } 
+ }
 
 let numberJoined = 0;
 
@@ -389,7 +389,7 @@ async function checkForUpdates() {
     const now = getNow();
 
     // Manage flags to indicate when the config file should be read
-    // Once a meeting is started, stop trying to start a new one until the current meeting has ended. 
+    // Once a meeting is started, stop trying to start a new one until the current meeting has ended.
 
     // If the config file has been modified, clear start meeting flags and see if there is a meeting to start
     const configFileStats = fs.statSync('config.json');
@@ -428,7 +428,7 @@ async function checkForUpdates() {
         gCurrentMeetingConfig = null;
     }
 
-    // FIXME: ZoomOSC is not issuing a /list after a member joins. 
+    // FIXME: ZoomOSC is not issuing a /list after a member joins.
     //        For now issue a /list command each time there is a change in the number of meeting members
     if ((state.names.size > 0) && (numberJoined != state.names.size)) {
         sendToZoom('/zoom/list');
@@ -463,7 +463,7 @@ function sendMessage(recipientZoomID: number, message: string, ...args: any[]) {
  * Take a raw messages and turn it into an element we can easily deal with later
  * @param message the raw message from ZoomOSC
  */
-function parseZoomOSCMessage(message: any) {
+function parseZoomOSCMessage(message: any): ZoomOSCMessage {
     const [address, targetID, userName, galIndex, zoomID, params] = [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
 
     return {
@@ -1145,9 +1145,9 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
     state.everyone.clear();
 
     sendMessage(null,"handleMeetingStatus", message.targetID);
- 
+
     // When meeting starts - ask for snapshot of the users who were there first
-    // Note: Normal message parameters don't apply here, use the first parameter. 
+    // Note: Normal message parameters don't apply here, use the first parameter.
     if (Number(message.targetID) == 1) {
         sendToZoom('/zoom/list');
     }
@@ -1165,7 +1165,7 @@ function handlePongReply(message: ZoomOSCMessage) {
         numUsers: Number(message.params[3]),
         isPro: Boolean(message.params[4])
     }
- 
+
     console.log("ZoomOSC Information", ZoomOSCInfo);
 }
 
