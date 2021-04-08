@@ -81,12 +81,33 @@ interface PersonState {
 
 // The ZoomOSC incoming user message with params broken out
 interface ZoomOSCMessage {
+    rawZoomMessage: any[];
+
     address: string;
     targetID: number;
     userName: string;
     galIndex: number;
     zoomID: number;
     params: string;
+
+    // List output parameters
+    targetCount: number;
+    listCount: number;
+    userRole: number;
+    onlineStatus: number;
+    videoStatus: boolean;
+    audioStatus: boolean;
+    handRaised: boolean;
+
+    // Pong output parameters
+    pingArg: any;
+    zoomOSCversion: string;
+    subscribeMode: number;
+    galTrackMode: number;
+    callStatus: number;
+    numTargets: number;
+    numUsers: number;
+    isPro: boolean;
 }
 
 // The ZoomOSC incoming user message with params broken out
@@ -464,15 +485,42 @@ function sendMessage(recipientZoomID: number, message: string, ...args: any[]) {
  * @param message the raw message from ZoomOSC
  */
 function parseZoomOSCMessage(message: any): ZoomOSCMessage {
-    const [address, targetID, userName, galIndex, zoomID, params] = [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
+    const [address, targetID, userName, galIndex, zoomID, params] =
+        [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
+    const [targetCount, listCount, userRole, onlineStatus, videoStatus, audioStatus, handRaised] =
+        [message.args[0], message.args[1], message.args[2], message.args[3], message.args[4], message.args[5], message.args[6]];
+    const [pingArg, zoomOSCversion, subscribeMode, galTrackMode, callStatus, numTargets, numUsers, isPro] =
+        [message.args[1], message.args[2], message.args[3], message.args[4], message.args[5], message.args[6], message.args[7], message.args[8]];
 
     return {
+        rawZoomMessage: message,
+
+        // Basic message format
         address: address,
         targetID: Number(targetID),
         userName: userName,
         galIndex: Number(galIndex),
         zoomID: Number(zoomID),
-        params: params
+        params: params,
+
+        // List message format
+        targetCount: Number(targetCount),
+        listCount: Number(listCount),
+        userRole: Number(userRole),
+        onlineStatus: Number(onlineStatus),
+        videoStatus: Boolean(videoStatus),
+        audioStatus: Boolean(audioStatus),
+        handRaised: Boolean(handRaised),
+
+        // Pong message format
+        pingArg: pingArg,
+        zoomOSCversion: String(zoomOSCversion),
+        subscribeMode: Number(subscribeMode),
+        galTrackMode: Number(galTrackMode),
+        callStatus: Number(callStatus),
+        numTargets: Number(numTargets),
+        numUsers: Number(numUsers),
+        isPro: Boolean(isPro)
     }
 }
 
@@ -1022,7 +1070,7 @@ function handleVideoOff(message: ZoomOSCMessage) {
 function handleRoleChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
-    person.userRole = Number(message.params[0]);
+    person.userRole = message.userRole;
     // console.log("handleRoleChanged message, person", message, person);
 }
 
@@ -1118,25 +1166,25 @@ function handleList(message: ZoomOSCMessage) {
         person = {
             zoomID: message.zoomID,
             userName: message.userName,
-            userRole: Number(message.params[2]),
-            audioOn: Boolean(message.params[5]),
-            videoOn: Boolean(message.params[4])
+            userRole: message.userRole,
+            audioOn: message.audioStatus,
+            videoOn: message.videoStatus
         }
         state.everyone.set(person.zoomID, person);
     } else {
         person.userName = message.userName;
-        person.userRole = Number(message.params[2]);
-        person.audioOn = Boolean(message.params[5]);
-        person.videoOn = Boolean(message.params[4]);
+        person.userRole = message.userRole;
+        person.audioOn = message.audioStatus;
+        person.videoOn = message.videoStatus;
     }
     addZoomIDToName(message.userName, message.zoomID);
 
     // FIXME : needs work
     // Send an /xlocal -mirror list command to all members of the ls-support group
-    // const supportPCs = state.groups.get(LS_SUPPORT_GRP);
-    // if (supportPCs) {
-    //     sendToZoom('/zoom/users/zoomID/chat', supportPCs, `/xlocal -mirrorlist, ${message}`);
-    // }
+    const supportPCs = state.groups.get(LS_SUPPORT_GRP);
+    if (supportPCs) {
+         sendToZoom('/zoom/users/zoomID/chat', supportPCs, `/xlocal -mirrorlist, ${message.rawZoomMessage}`);
+    }
 }
 
 function handleMeetingStatus(message: ZoomOSCMessage) {
@@ -1156,14 +1204,14 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
 function handlePongReply(message: ZoomOSCMessage) {
 
     ZoomOSCInfo = {
-        pingArg: message.userName,
-        zoomOSCversion: String(message.galIndex),
-        subscribeMode: Number(message.zoomID),
-        galTrackMode: Number(message.params[0]),
-        callStatus: Number(message.params[1]),
-        numTargets: Number(message.params[2]),
-        numUsers: Number(message.params[3]),
-        isPro: Boolean(message.params[4])
+        pingArg: message.pingArg,
+        zoomOSCversion: message.zoomOSCversion,
+        subscribeMode: message.subscribeMode,
+        galTrackMode: message.galTrackMode,
+        callStatus: message.callStatus,
+        numTargets: message.numTargets,
+        numUsers: message.numUsers,
+        isPro: message.isPro
     }
 
     console.log("ZoomOSC Information", ZoomOSCInfo);
