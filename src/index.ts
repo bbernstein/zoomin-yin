@@ -8,6 +8,8 @@ import {
     LocalDateTime,
     LocalTime
 } from '@js-joda/core';
+import { rawListeners } from 'process';
+import { BooleanLiteral } from 'typescript';
 
 // OSC server (port to listen to ZoomOSC and clients)
 // Our Listener
@@ -75,6 +77,7 @@ interface PersonState {
     zoomID: number;
     userName: string;
     userRole: number;
+    onlineStatus: boolean;
     audioOn: boolean;
     videoOn: boolean;
 }
@@ -94,7 +97,7 @@ interface ZoomOSCMessage {
     targetCount: number;
     listCount: number;
     userRole: number;
-    onlineStatus: number;
+    onlineStatus: boolean;
     videoStatus: boolean;
     audioStatus: boolean;
     handRaised: boolean;
@@ -488,15 +491,15 @@ function parseZoomOSCMessage(message: any): ZoomOSCMessage {
     const [address, targetID, userName, galIndex, zoomID, params] =
         [message.address, message.args[0], message.args[1], message.args[2], message.args[3], message.args.slice(4)];
     const [targetCount, listCount, userRole, onlineStatus, videoStatus, audioStatus, handRaised] =
-        [message.args[0], message.args[1], message.args[2], message.args[3], message.args[4], message.args[5], message.args[6]];
+        [message.args[4], message.args[5], message.args[6], message.args[7], message.args[8], message.args[9], message.args[10]];
     const [pingArg, zoomOSCversion, subscribeMode, galTrackMode, callStatus, numTargets, numUsers, isPro] =
-        [message.args[1], message.args[2], message.args[3], message.args[4], message.args[5], message.args[6], message.args[7], message.args[8]];
+        [message.args[1], message.args[2], message.args[3], message.args.slice(4), message.args[5], message.args[6], message.args[7], message.args[8]];
 
     return {
-        rawZoomMessage: message,
+        rawZoomMessage: message.args,
+        address: address,
 
         // Basic message format
-        address: address,
         targetID: Number(targetID),
         userName: userName,
         galIndex: Number(galIndex),
@@ -507,7 +510,7 @@ function parseZoomOSCMessage(message: any): ZoomOSCMessage {
         targetCount: Number(targetCount),
         listCount: Number(listCount),
         userRole: Number(userRole),
-        onlineStatus: Number(onlineStatus),
+        onlineStatus: Boolean(onlineStatus),
         videoStatus: Boolean(videoStatus),
         audioStatus: Boolean(audioStatus),
         handRaised: Boolean(handRaised),
@@ -624,6 +627,7 @@ function handleChatCommand(message: ZoomOSCMessage) {
             sendToZoom('/zoom/list');
             break;
         case '/state':   // Display full state on console
+            sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
             sendMessage(null, `\n state:`, state);
             break;
 
@@ -737,6 +741,11 @@ function createGroup(recipientZoomID: number, params: string[]) {
     });
 
     state.groups.set(params[1], zoomidList);
+
+    // Update the state on all secondary PC's
+    if (params[1] = LS_SUPPORT_GRP) {
+        sendToZoom('/zoom/list');
+    }
 }
 
 function deleteGroup(recipientZoomID: number, param: string) {
@@ -1003,21 +1012,30 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     // }
 
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
-    sendMessage(null,`executeLocal myName = "${ myName }"`, params);
+    
     // Make sure this is the targetPC
     // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
     if (params[1] == myName) {
 
-        // FIXME : needs work
         // Sub-command to mirror the result of the /zoomosc/list command that was executed on the primary script
-        // if (params[2] == "-mirrorlist") {
-        //     const newMessage = { params[3], ...params.slice(4) };
-        //     handleList(newMessage);
-        // }
+        //        /xlocal targetPC.zoomID -mirrorlist <original /list command>`);
+        if (params[2] == "-mirrorlist") {
+
+            // Only Mirror when in secondary mode
+            if (primaryMode) return;
+
+            const newMessage = [params[3], ...params.slice(4)];
+            console.log("executeLocal: newMessage", newMessage)
+            handleList(parseZoomOSCMessage(newMessage));
+            
+            console.log("DEBUG: executeLocal: state", state)
+            return;
+        }
 
         // FIXME: Not sure why this doesn't compile - Probably because the result of the slice could be null
         // sendToZoom(...params.slice(2));
         sendToZoom(params[2], ...params.slice(3));
+        sendMessage(null, `executeLocal myName = "${myName}"`, params);
     }
 }
 
@@ -1134,12 +1152,22 @@ function handleOnline(message: ZoomOSCMessage) {
         zoomID: message.zoomID,
         userName: message.userName,
         userRole: USERROLE_NONE,
+        onlineStatus: true,
         audioOn: false,
         videoOn: false
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
     sendMessage(null, "handleOnline message, person", message, person);
+
+    // FIXME: Figure out whoami
+    if (message.address == "/zoomosc/me/handleOnline") {
+        // myName = message.userName;
+        // myZoomID = message.zoomID;
+    }
+
+    console.log("DEBUG: 1", myName, myZoomID);
+
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
     //        For now manually mute people upon entry after 25 have joined the meeting
@@ -1167,6 +1195,7 @@ function handleList(message: ZoomOSCMessage) {
             zoomID: message.zoomID,
             userName: message.userName,
             userRole: message.userRole,
+            onlineStatus: message.onlineStatus,
             audioOn: message.audioStatus,
             videoOn: message.videoStatus
         }
@@ -1174,17 +1203,34 @@ function handleList(message: ZoomOSCMessage) {
     } else {
         person.userName = message.userName;
         person.userRole = message.userRole;
+        person.onlineStatus = message.onlineStatus;
         person.audioOn = message.audioStatus;
         person.videoOn = message.videoStatus;
     }
     addZoomIDToName(message.userName, message.zoomID);
 
-    // FIXME : needs work
+    // If the user is offline, remove from state
+    if (!person.onlineStatus) {
+        console.log("remove user", person.zoomID)
+        state.everyone.delete(person.zoomID);
+        removeZoomIDFromName(person.userName, person.zoomID);
+    }
+
+     // FIXME: Figure out whoami
+    if (message.address == "/zoomosc/me/list") {
+        // myName = message.userName;
+        // myZoomID = message.zoomID;
+    }
+
     // Send an /xlocal -mirror list command to all members of the ls-support group
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
-    if (supportPCs) {
-         sendToZoom('/zoom/users/zoomID/chat', supportPCs, `/xlocal -mirrorlist, ${message.rawZoomMessage}`);
-    }
+    if (!supportPCs) return;
+
+    supportPCs.forEach((zoomid) => {
+        // FIXME: Don't sent to self
+        const targetPC = state.everyone.get(zoomid);
+        sendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${message.rawZoomMessage}`);
+    });
 }
 
 function handleMeetingStatus(message: ZoomOSCMessage) {
@@ -1222,8 +1268,8 @@ function setupOscListeners() {
 
     // convenient code to print every incoming messagse
     // osc.on('*', message => {
-    //     console.log("OSC * Message", message)
-    // });
+    //   console.log("OSC * Message", message)
+    //});
 
     osc.on('/zoomosc/meetingStatus', async message => handleMeetingStatus(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/pong', async message => handlePongReply(parseZoomOSCMessage(message)));
