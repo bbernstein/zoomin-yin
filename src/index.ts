@@ -1166,9 +1166,6 @@ function handleOnline(message: ZoomOSCMessage) {
         // myZoomID = message.zoomID;
     }
 
-    console.log("DEBUG: 1", myName, myZoomID);
-
-
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
     //        For now manually mute people upon entry after 25 have joined the meeting
     if (state.names.size > 25) {
