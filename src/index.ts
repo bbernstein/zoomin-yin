@@ -43,6 +43,7 @@ const SKIP_PC_STRING = "-";
 const DEFAULT_MX_GRP = "leaders";
 const DEFAULT_DURATION = "PT1H";
 const CONFIG_POLL_TIME = 15000;
+const ENDOFMEETING_WARNING_WINDOW = 5;    // In minutes
 
 // const SKIP_CURRENT = true;
 // const DONT_SKIP_CURRENT = false;
@@ -452,6 +453,13 @@ async function checkForUpdates() {
         gCurrentMeetingConfig = null;
     }
 
+    // Starting 5 minutes before the MaxDuration, send warnings to the host and co-hosts that the meeting will end 
+    if (gCurrentMeetingConfig && (now.isAfter(gCurrentMeetingConfig.maxEndDateTime.minusMinutes(ENDOFMEETING_WARNING_WINDOW)))) {
+        if (!ZoomOSCInfo.isPro) {
+            sendMessage(null, `Warning: The meeting will be terminated at approximately: ${gCurrentMeetingConfig.maxEndDateTime.toLocaleString().substring(1)}`);
+        }
+    }
+
     // FIXME: ZoomOSC is not issuing a /list after a member joins.
     //        For now issue a /list command each time there is a change in the number of meeting members
     if ((state.names.size > 0) && (numberJoined != state.names.size)) {
@@ -533,6 +541,7 @@ function parseZoomOSCMessage(message: any): ZoomOSCMessage {
  */
 
 function handleChatMessage(message: ZoomOSCMessage) {
+
     const chatMessage = message.params[0];
     if (chatMessage.charAt(0) !== '/') return;
 
@@ -646,7 +655,7 @@ function handleChatCommand(message: ZoomOSCMessage) {
             break;
         case '/test':
             // console.log("quicktest host", params[1]);
-            // sendToZoom("/zoom/userName/makeCoHost", params[1] );
+            sendToZoom("/zoom/me/zoomiD/pin2", 16779264 );
             break;
         default:
             sendMessage(message.zoomID, "Error: Unimplemented Chat Command");
@@ -687,9 +696,9 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
 
 function checkPassword(recipientZoomID: number, params: string[]): boolean {
     let passwordValid = false;
-
- //   if (!gCurrentMeetingConfig || !gCurrentMeetingConfig.codeWord) {
-    if (!gCurrentMeetingConfig) {
+    console.log()
+    if (!gCurrentMeetingConfig && !gDefaultCodeWord) {
+//    if (!gCurrentMeetingConfig) {
 
         sendMessage(recipientZoomID, `Error - This meeting is not configured for special command processing`);
         return (passwordValid);
@@ -887,11 +896,11 @@ function setPin(recipientZoomID: number, params: string[]) {
             // Check if I'm the target
             if (targetPC.userName == myName) {
                 sendToZoom("/zoom/userName/pin2", name);
-                // sendToZoom("/zoom/zoomID/pin2", zoomid);
+                // sendToZoom("/zoom/me/zoomID/pin2", zoomid);
             } else {
                 // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
                 sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/userName/pin2 "${name}"`);
-                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/zoomID/pin2 ${zoomid}`);
+                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/zoomID/pin2 "${zoomid}"`);
             }
         }
     });
@@ -1024,11 +1033,19 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
             // Only Mirror when in secondary mode
             if (primaryMode) return;
 
-            const newMessage = [params[3], ...params.slice(4)];
-            console.log("executeLocal: newMessage", newMessage)
-            handleList(parseZoomOSCMessage(newMessage));
+            // const newMessage = [params[3], ...params.slice(4)];
+            // let newMessage: Message;
+            // newMessage.args = [...params.slice(3)];
+
+            // The value of the room state
+            // const newMessage: Message = {
+            //   address: ("/xlocal -mirrorlist"),
+            //   args: (...params.slice(3)),
+            //    types: ()
+            //}
+
+            // handleList(parseZoomOSCMessage(newMessage));
             
-            console.log("DEBUG: executeLocal: state", state)
             return;
         }
 
@@ -1161,10 +1178,10 @@ function handleOnline(message: ZoomOSCMessage) {
     sendMessage(null, "handleOnline message, person", message, person);
 
     // FIXME: Figure out whoami
-    if (message.address == "/zoomosc/me/handleOnline") {
+    // if (message.address == "/zoomosc/me/handleOnline") {
         // myName = message.userName;
         // myZoomID = message.zoomID;
-    }
+    // }
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
     //        For now manually mute people upon entry after 25 have joined the meeting
@@ -1186,6 +1203,7 @@ function handleOffline(message: ZoomOSCMessage) {
 }
 
 function handleList(message: ZoomOSCMessage) {
+
     let person: PersonState = state.everyone.get(message.zoomID);
     if (!person) {
         person = {
@@ -1214,10 +1232,10 @@ function handleList(message: ZoomOSCMessage) {
     }
 
      // FIXME: Figure out whoami
-    if (message.address == "/zoomosc/me/list") {
+    // if (message.address == "/zoomosc/me/list") {
         // myName = message.userName;
         // myZoomID = message.zoomID;
-    }
+    //}
 
     // Send an /xlocal -mirror list command to all members of the ls-support group
     const supportPCs = state.groups.get(LS_SUPPORT_GRP);
@@ -1226,7 +1244,13 @@ function handleList(message: ZoomOSCMessage) {
     supportPCs.forEach((zoomid) => {
         // FIXME: Don't sent to self
         const targetPC = state.everyone.get(zoomid);
-        sendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${message.rawZoomMessage}`);
+
+        // All of the parameters of the list command are numbers except for the user name. 
+        // Put the username in quote and allow the string to include commas
+        const chatMessagePart1 = `${message.rawZoomMessage[0]} "${message.rawZoomMessage[1]}"`;
+        const chatMessagePart2 = `${message.rawZoomMessage.slice(2)}`
+            .replace(/,/g, " ");
+        sendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${ chatMessagePart1 } ${ chatMessagePart2 }` );
     });
 }
 
@@ -1265,8 +1289,8 @@ function setupOscListeners() {
 
     // convenient code to print every incoming messagse
     // osc.on('*', message => {
-    //   console.log("OSC * Message", message)
-    //});
+    //    console.log("OSC * Message", message)
+    // });
 
     osc.on('/zoomosc/meetingStatus', async message => handleMeetingStatus(parseZoomOSCMessage(message)));
     osc.on('/zoomosc/pong', async message => handlePongReply(parseZoomOSCMessage(message)));
