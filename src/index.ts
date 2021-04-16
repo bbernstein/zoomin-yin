@@ -411,8 +411,6 @@ async function run() {
     }
  }
 
-let numberJoined = 0;
-
 async function checkForUpdates() {
 
     const now = getNow();
@@ -469,14 +467,11 @@ async function checkForUpdates() {
                 sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning command`);
             }
         });
-    }
 
-    // FIXME: ZoomOSC is not issuing a /list after a member joins.
-    //        For now issue a /list command each time there is a change in the number of meeting members
-    if ((state.names.size > 0) && (numberJoined != state.names.size)) {
-        sendToZoom('/zoom/list');
+        // FIXME: Replace above code 
+        // state.everyone.filter(person => {...  return (ZoomOSCInfo.isPro && isHost(person.zoomID) ) })
+        //     .forEach(person => { sendMessage(...) });
     }
-    numberJoined = state.names.size;
 
     // check again after the specified poll time
     setTimeout(checkForUpdates, CONFIG_POLL_TIME);
@@ -657,12 +652,6 @@ function handleChatCommand(message: ZoomOSCMessage) {
         case '/xlocal':
             executeLocal(message, params);
             break;
-        case '/reset':    // Clear state and build new state
-            state.names.clear();
-            state.groups.clear();
-            state.everyone.clear();
-            sendToZoom('/zoom/list');
-            break;
         case '/test':
             // console.log("quicktest host", params[1]);
             // sendToZoom("/zoom/me/zoomiD/pin2", 16779264 );
@@ -687,6 +676,14 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
                 }
             }
             break;
+        case '/reset':
+            if (checkPassword(recipientZoomID, params.slice(1))) {
+                state.names.clear();
+                state.groups.clear();
+                state.everyone.clear();
+                sendToZoom('/zoom/list');
+            }
+            break;
         case '/end':
             if (!isHost(recipientZoomID)) {
                 sendMessage(recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
@@ -698,6 +695,10 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
                     sendToZoom("/zoom/endMeeting");
                 }
             }
+            break;
+        case '/state':   // Display full state on console
+            sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
+            sendMessage(null, `\n state:`, state);
             break;
         default:
             specialCommand = false;
@@ -762,7 +763,7 @@ function createGroup(recipientZoomID: number, params: string[]) {
     state.groups.set(params[1], zoomidList);
 
     // Update the state on all secondary PC's
-    if (params[1] = LS_SUPPORT_GRP) {
+    if ( params[1] == LS_SUPPORT_GRP) {
         sendToZoom('/zoom/list');
     }
 }
@@ -1083,35 +1084,35 @@ function handleUnmute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
     person.audioOn = true;
-    // console.log("handleUnmute message, person", message, person);
+    // console.log("DEBUG: handleUnmute message, person", message, person);
 }
 
 function handleMute(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
     person.audioOn = false;
-    // console.log("handleMute message, person", message, person);
+    // console.log("DEBUG: handleMute message, person", message, person);
 }
 
 function handleVideoOn(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
     person.videoOn = true;
-    // console.log("handleVideoOn message, person", message, person);
+    // console.log("DEBUG: handleVideoOn message, person", message, person);
 }
 
 function handleVideoOff(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
     person.videoOn = false;
-    // console.log("handleVideoOff message, person", message, person);
+    // console.log("DEBUG: handleVideoOff message, person", message, person);
 }
 
 function handleRoleChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
-    person.userRole = message.userRole;
-    // console.log("handleRoleChanged message, person", message, person);
+    person.userRole = Number(message.params[0]);
+    // console.log("DEBUG: handleRoleChanged message, person", message, person);
 }
 
 function addZoomIDToName(name: string, zoomID: number) {
@@ -1163,6 +1164,8 @@ function handleNameChanged(message: ZoomOSCMessage) {
     if (message.zoomID == myZoomID[0]) {
         myName = message.userName;
     }
+
+    // console.log("DEBUG: NameChanged message, person", message, person);
 }
 
 function handleOnline(message: ZoomOSCMessage) {
@@ -1193,6 +1196,12 @@ function handleOnline(message: ZoomOSCMessage) {
     if (state.names.size > 25) {
         sendToZoom('/zoom/zoomID/mute', person.zoomID);
     }
+
+    // FIXME: ZoomOSC is not issuing a /list after a member joins.
+    //        For now issue a /list command each time someone joins the meeting
+    sendToZoom('/zoom/list');
+
+    // console.log("DEBUG: handleOnline message, person", message, person);
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
@@ -1204,6 +1213,8 @@ function handleOffline(message: ZoomOSCMessage) {
     sendMessage(null,"handleOffline message, person", message, person);
     state.everyone.delete(person.zoomID);
     removeZoomIDFromName(message.userName, message.zoomID);
+
+    // console.log("DEBUG: handleOffline message, person", message, person);
 
 }
 
