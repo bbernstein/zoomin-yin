@@ -37,12 +37,16 @@ const osc = new OSC({
 const USERROLE_NONE = 0;
 const USERROLE_HOST = 1;
 const USERROLE_COHOST = 2;
+const DEFAULT_MX_GRP = "leaders";
 const LS_SUPPORT_GRP = "ls-support";      // Must assign a group called "ls-support"
+const ZOOMOSC_DEVICES_GRP = "oscdevices"; // Used to mirror state on secondary devices
+const PRIMARY_USER = "zoomin-yin";        // Try to figure out whoami by asking the Primary User"
 const SKIP_PC = -1;
 const SKIP_PC_STRING = "-";
-const DEFAULT_MX_GRP = "leaders";
-const DEFAULT_DURATION = "PT1H";
+const ADDTOGRP = true;
 const CONFIG_POLL_TIME = 15000;
+const DEFAULT_DURATION = "PT1H";
+const DEFAULT_ADD_MINUTES = 5;
 const ENDOFMEETING_WARNING_WINDOW = 5;    // In minutes
 
 // const SKIP_CURRENT = true;
@@ -59,7 +63,7 @@ const fakeNow = null;
 
 let primaryMode = true;
 let myName = "";
-let myZoomID: Number[] = [0, 0]
+let myZoomID: Number[] = [0, 0];
 
 // The definition of the current state of the room
 interface RoomState {
@@ -161,7 +165,6 @@ let gDefaultCodeWord: string;
 let disableStartMeeting = false;
 let configLastModified: number;
 let configFileChecked = false;   // Used to limit numnber of warnings/errors in calculateMeeting
-let keepRunning = false;
 
 // get this thing started
 run()
@@ -313,9 +316,6 @@ function startMeeting(meetingConfig: MeetingConfig) {
 
     // Stop trying to start a new meeting until this one has ended.
     disableStartMeeting = true;
-
-    // initialize global meeting controls
-    keepRunning = false;
 }
 
 // return -1 if meeting1 is lower, 1 if meeting2 is lower, 0 if they are equal
@@ -366,20 +366,6 @@ function nextMeeting(meetings: MeetingConfig[]): MeetingConfig {
 
 async function run() {
 
-    // myName and primaryMode are need to support /xlocal commands
-
-    // FIXME: Get myName from the command line until we find a way to figure it out from ZoomOSC
-    if (process.argv[2]) {
-        myName = process.argv[2];
-    }
-
-    if (process.argv[3]) {
-        primaryMode = (process.argv[3] != "-secondary");
-    }
-
-    sendMessage(null,`running in ${ primaryMode ? "Primary" : "Secondary" } mode`);
-    sendMessage(null,`running as user "${ myName }"`);
-
     // prepare to listen to OSC
     setupOscListeners();
 
@@ -394,6 +380,15 @@ async function run() {
     sendToZoom('/zoom/ping', "ZoomOSC Information");
     await sleep(2000);
 
+    // If running ZoomOSC PRO, the operated in Primary mode
+    if (ZoomOSCInfo) {
+        primaryMode = ZoomOSCInfo.isPro;
+    } else {
+        primaryMode = false;
+        sendMessage(null, `----------------------------------------------------------------------`);
+        sendMessage(null, `Warning: Can't communicate with ZoomOSC`);
+        sendMessage(null, `----------------------------------------------------------------------`);
+    }
 
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
@@ -408,8 +403,35 @@ async function run() {
         //      PT: Period Time       2H: two hours       15M: fifteen minutes
 
         await checkForUpdates();
+    } 
+
+    // Try to figure out whoami
+    getWhoami();
+    await sleep(2000);
+    reportInfo();
+}
+
+async function getWhoami() {
+    if (!primaryMode) {
+        sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
+
+        //FIXME: This delay doesn't appear to work.  
+        await sleep(2000);
+        if (myName) {
+            sendToZoom('/zoom/list');
+        }
     }
- }
+}
+
+function reportInfo() {
+    sendMessage(null, `--------------------------------------------------------------------------------`);
+    if (ZoomOSCInfo && ZoomOSCInfo.callStatus) {
+        sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode as User: "${myName}", ZoomID: ${myZoomID[0]}`);
+    } else {
+        sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode - Meeting is not in progress`);
+    }
+    sendMessage(null, `--------------------------------------------------------------------------------`);
+}
 
 async function checkForUpdates() {
 
@@ -427,7 +449,6 @@ async function checkForUpdates() {
         disableStartMeeting = false;
         gCurrentMeetingConfig = null;
         configFileChecked = false;
-        keepRunning = false;
     }
 
     // Start/Join the current meeting if one exists
@@ -447,7 +468,7 @@ async function checkForUpdates() {
     }
 
     // Stop the current meeting if it has reached the maxDuration
-    if (!keepRunning && gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.maxEndDateTime)) {
+    if (gCurrentMeetingConfig && now.isAfter(gCurrentMeetingConfig.maxEndDateTime)) {
         if (!ZoomOSCInfo.isPro) {
             sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
         }
@@ -457,14 +478,14 @@ async function checkForUpdates() {
     }
 
     // Starting ~5 minutes before the MaxDuration, send warnings to the host and co-hosts that the meeting will end 
-    if (!keepRunning && gCurrentMeetingConfig && (now.isAfter(gCurrentMeetingConfig.maxEndDateTime.minusMinutes(ENDOFMEETING_WARNING_WINDOW)))) {
+    if (gCurrentMeetingConfig && (now.isAfter(gCurrentMeetingConfig.maxEndDateTime.minusMinutes(ENDOFMEETING_WARNING_WINDOW)))) {
 
         state.everyone.forEach(person => {
             const zoomid = person.zoomID;
             const endtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
 
             if (ZoomOSCInfo.isPro && isHost(zoomid)) {
-                sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning command`);
+                sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning <minutes> command`);
             }
         });
 
@@ -548,6 +569,8 @@ function parseZoomOSCMessage(message: any): ZoomOSCMessage {
 
 function handleChatMessage(message: ZoomOSCMessage) {
 
+    // console.log("DEBUG: handleChatMessage message", message);
+
     const chatMessage = message.params[0];
     if (chatMessage.charAt(0) !== '/') return;
 
@@ -567,16 +590,12 @@ function handleChatMessage(message: ZoomOSCMessage) {
 function handleChatCommand(message: ZoomOSCMessage) {
     const chatMessage = message.params;
 
-    // FIXME:
-    // set myZoomID
-    // if (myZoomID[0] == 0) {
-    //     myZoomID = state.names.get(myName);
-    // }
-
     // only deal with chat messages starting with slash, else exit
     if (!chatMessage[0].startsWith('/')) {
         return;
     }
+
+    // console.log("DEBUG: handleChatCommand message", message);
 
     const params = wordify(chatMessage);
 
@@ -586,15 +605,13 @@ function handleChatCommand(message: ZoomOSCMessage) {
         return;
     }
 
-    // Process special commands /cohost and /end that require a password
-    if (processSpecial(message.zoomID, params)) {
+    // Process special commands
+    if (processSpecial(message, params)) {
         return;
     }
 
     // only deal with chat messages from a host, else exit
-    // FIXME: For secondary clients, we don't know the state info for the users.  For now, don't do isHost check for /xlocal commands
-    // if (!isHost(message.zoomID)) {
-    if (!(params[0] == "/xlocal") && !isHost(message.zoomID)) {
+    if (!isHost(message.zoomID)) {
         sendMessage(message.zoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
         return;
     }
@@ -639,30 +656,25 @@ function handleChatCommand(message: ZoomOSCMessage) {
         case '/list':     // initiate a /list command
             sendToZoom('/zoom/list');
             break;
-        case '/state':   // Display full state on console
-            sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
-            sendMessage(null, `\n state:`, state);
-            break;
         case '/keeprunning':
-            keepRunning = true;
+            keepRunning(message.zoomID, params);
             break;
         case '/xremote':
             executeRemote(message, params);
             break;
-        case '/xlocal':
-            executeLocal(message, params);
-            break;
         case '/test':
             // console.log("quicktest host", params[1]);
-            // sendToZoom("/zoom/me/zoomiD/pin2", 16779264 );
+            sendToZoom('/zoom/list');
             break;
         default:
             sendMessage(message.zoomID, "Error: Unimplemented Chat Command");
     }
 }
 
-function processSpecial(recipientZoomID: number, params: string[]): boolean {
+function processSpecial(message: ZoomOSCMessage, params: string[]): boolean {
     let specialCommand = true;
+    const recipientZoomID = message.zoomID;
+
     switch (params[0]) {
 
         case '/cohost':
@@ -697,8 +709,19 @@ function processSpecial(recipientZoomID: number, params: string[]): boolean {
             }
             break;
         case '/state':   // Display full state on console
+            reportInfo();
             sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
             sendMessage(null, `\n state:`, state);
+            break;
+        case '/xlocal':
+            executeLocal(message, params);
+            break;
+        case '/whoami':
+            sendMessage(recipientZoomID, `Whoami: ${message.userName} ${message.zoomID}`);
+            sendToZoom('/zoom/zoomID/chat', recipientZoomID, `/xlocal "${message.userName}" -whoami ${JSON.stringify(message.rawZoomMessage)}`);
+
+            // Add User to ZoomOSCDevices
+            createGroup(recipientZoomID, ["/grp", "-add", ZOOMOSC_DEVICES_GRP, message.userName], ADDTOGRP);
             break;
         default:
             specialCommand = false;
@@ -720,7 +743,8 @@ function checkPassword(recipientZoomID: number, params: string[]): boolean {
         return (passwordValid);
     }
 
-    if (params[0] !== gCurrentMeetingConfig.codeWord) {
+    if (( gCurrentMeetingConfig && (params[0] !== gCurrentMeetingConfig.codeWord)) ||
+        (!gCurrentMeetingConfig && (params[0] !== gDefaultCodeWord)) ) {
         sendMessage(recipientZoomID, `Error - Invalid Password`);
         return (passwordValid);
     }
@@ -742,10 +766,24 @@ function getPeopleFromName(name: string): PersonState[] {
     return ids.map(id => state.everyone.get(id));
 }
 
-function createGroup(recipientZoomID: number, params: string[]) {
-    let zoomidList: number[] = [];
+function createGroup(recipientZoomID: number, params: string[], addtogroup: boolean) {
 
-    const namesList = params.slice(2);
+    let zoomidList: number[] = [];
+    let namesList = params.slice(2);
+    let groupName = params[1];
+
+    if (addtogroup && params[2]) {
+        zoomidList = state.groups.get(params[2]) ? state.groups.get(params[2]) : [];
+        namesList = params.slice(3);
+        groupName = params[2];
+
+        // Check if this user is already in the group
+        // FIXME: This currently only works for one name being added - Should be able to modify the code below with a filter
+        const people = getPeopleFromName(params[3]);
+         if (people) {
+            if (zoomidList.indexOf(people[0].zoomID) > -1) return;
+        }
+    }
 
     namesList.forEach((name) => {
         const curUser: PersonState[] = getPeopleFromName(name);
@@ -760,10 +798,10 @@ function createGroup(recipientZoomID: number, params: string[]) {
         }
     });
 
-    state.groups.set(params[1], zoomidList);
+    state.groups.set(groupName, zoomidList);
 
     // Update the state on all secondary PC's
-    if ( params[1] == LS_SUPPORT_GRP) {
+    if ( groupName == ZOOMOSC_DEVICES_GRP) {
         sendToZoom('/zoom/list');
     }
 }
@@ -772,7 +810,7 @@ function deleteGroup(recipientZoomID: number, param: string) {
     const members = state.groups.get(param);
 
     if (!members) {
-        sendMessage(recipientZoomID, `displayGroup Error: Group "${ param }" does not exist`);
+        sendMessage(recipientZoomID, `deleteGroup Error: Group "${ param }" does not exist`);
         return;
     }
 
@@ -840,7 +878,7 @@ function manageGroups(recipientZoomID: number, params: string[]) {
     //         /grp <groupname> [<group members>]
 
     // Sub commands
-    if (params[1].startsWith('-')) {
+    if (params[1] && params[1].startsWith('-')) {
         switch (params[1]) {
             case '-l':
             case '-list':
@@ -858,6 +896,13 @@ function manageGroups(recipientZoomID: number, params: string[]) {
                     deleteGroup(recipientZoomID, params[2]);
                 }
                 break;
+            case '-a':
+            case '-add':
+                if (params[2]) {
+                    createGroup(recipientZoomID, params, ADDTOGRP);
+                    displayGroup(recipientZoomID, params[2]);
+                }
+                break;
             case '-da':
             case '-deleteall':
                 state.groups.clear();
@@ -869,7 +914,7 @@ function manageGroups(recipientZoomID: number, params: string[]) {
     }
 
     if (params.length > 2) {
-        createGroup(recipientZoomID, params);
+        createGroup(recipientZoomID, params, null);
     } else {
         displayGroup(recipientZoomID, params[1]);
     }
@@ -904,14 +949,19 @@ function setPin(recipientZoomID: number, params: string[]) {
         if (!person) {
             sendMessage(recipientZoomID, `setPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
+
+            // console.log("DEBUG: targetPC.zoomID", targetPC.zoomID, myZoomID[0]);
+
             // Check if I'm the target
-            if (targetPC.userName == myName) {
+            if (targetPC.zoomID == myZoomID[0]) {
+                // FIXME: Prefer to use zoomID instead of userName, but ZoomOSC doesn't appear to work properly
+                //        For some reason, it works for multi-pinning
                 sendToZoom("/zoom/userName/pin2", name);
-                // sendToZoom("/zoom/me/zoomID/pin2", zoomid);
+                // FIXME: sendToZoom("/zoom/me/zoomID/pin2", zoomid);
             } else {
-                // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/userName/pin2 "${name}"`);
-                // sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.userName}" /zoom/me/zoomID/pin2 "${zoomid}"`);
+                // FIXME: Prefer to use zoomID instead of userName, but ZoomOSC doesn't appear to work properly
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.zoomID}" /zoom/userName/pin2 "${name}"`);
+                // FIXME: sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.zoomID}" /zoom/me/zoomID/pin2 "${zoomid}"`);
             }
         }
     });
@@ -922,7 +972,7 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
     const currentGroup = state.groups.get(params[1]);
 
     // FIXME: Need to implement default multipin device - Use primary device for now.
-    //        This could/should change when there are more than one activations
+    //        This could/should change when there are more than one ZoomOSC PRO activations
     const multipinDevice = myName;
 
     // Make sure device exists
@@ -955,7 +1005,8 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
         sendMessage(null, `setMultiPin:`);
         sendToZoom("/zoom/me/clearPin");
     } else {
-        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/me/clearPin`);
+        // FIXME: Don't think we can ever get here. 
+        sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.zoomID }" /zoom/me/clearPin`);
     }
 
     currentGroup.forEach(function (zoomid) {
@@ -970,9 +1021,9 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
             if (targetPC.userName == myName) {
                 sendToZoom("/zoom/zoomID/addPin", zoomid);
             } else {
-                // FIXME: Prefer to use zoomID instead of userName, but zoomID state not maintained (yet) in secondary mode
-                //        Also, not sure if addPin works with a list of zoomID's
-                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${ targetPC.userName }" /zoom/zoomID/addPin ${ zoomid }`);
+                // FIXME: Not sure if addPin works with a list of zoomID's
+                //        Don't think we can ever get here.       
+                sendToZoom('/zoom/zoomID/chat', targetPC.zoomID, `/xlocal "${targetPC.zoomID}" /zoom/zoomID/addPin ${zoomid}`);
             }
         }
     });
@@ -1028,15 +1079,11 @@ function executeRemote(message: ZoomOSCMessage, params: string[]) {
 
 function executeLocal(message: ZoomOSCMessage, params: string[]) {
 
-    // no zoom ids found, return
-    // if (myZoomID) {
-    // }
-
     // Command format: /xlocal targetPC.zoomID <ZoomOSC Command> [options]`);
     
     // Make sure this is the targetPC
-    // if (Number(params[1]) == myZoomID[0]) {        -- FIXME: Having troubles with using the zoomid
-    if (params[1] == myName) {
+    // FIXME: Figure out how to allow /execute local before we know whoami
+    if (!primaryMode || (Number(params[1]) == myZoomID[0])) {
 
         // Sub-command to mirror the result of the /zoomosc/list command that was executed on the primary script
         //        /xlocal targetPC.zoomID -mirrorlist <original /list command>`);
@@ -1055,11 +1102,35 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
             return;
         }
 
+        if (params[2] == "-whoami") {
+            const oscMsgString = message.rawZoomMessage.args[4];
+            const newMessage = JSON.parse(oscMsgString.slice(oscMsgString.indexOf(params[2]) + params[2].length));;
+
+            const parsedMessage = parseZoomOSCMessage(newMessage);
+
+            // FIXME - still need to deal with Name => multiple ZoomID's
+            myName = parsedMessage.userName;
+            myZoomID[0] = parsedMessage.zoomID;
+
+            return;
+        }
+
         // FIXME: Not sure why this doesn't compile - Probably because the result of the slice could be null
         // sendToZoom(...params.slice(2));
         sendToZoom(params[2], ...params.slice(3));
         sendMessage(null, `executeLocal myName = "${myName}"`, params);
     }
+}
+
+function keepRunning(recipientZoomID: number, params: string[]) {
+    const minutestoadd = (params[1] && gCurrentMeetingConfig) ? Number(params[1]) : DEFAULT_ADD_MINUTES;
+
+    if (!gCurrentMeetingConfig) return;
+
+    gCurrentMeetingConfig.maxEndDateTime = gCurrentMeetingConfig.maxEndDateTime.plusMinutes(minutestoadd);
+    const newEndtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
+
+    sendMessage(recipientZoomID, `New endtime = "${newEndtime}"`);
 }
 
 // This changes curly quotes and strange line-endings to plain ascii versions
@@ -1183,13 +1254,14 @@ function handleOnline(message: ZoomOSCMessage) {
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
-    sendMessage(null, "handleOnline message, person", message, person);
 
-    // FIXME: Figure out whoami
-    // if (message.address == "/zoomosc/me/handleOnline") {
-    //    myName = message.userName;
-    //    myZoomID[0] = message.zoomID;
-    //}
+    // Figure out whoami - This works for both primary and secondary, script must be running before meeting starts
+    //                     Role will not be updated until after the forst /list command mirros the full state
+    // FIXME - still need to deal with Name => multiple ZoomID's
+    if (message.address == "/zoomosc/me/online") {
+        myName = message.userName;
+        myZoomID[0] = message.zoomID;
+    }
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
     //        For now manually mute people upon entry after 25 have joined the meeting
@@ -1201,7 +1273,7 @@ function handleOnline(message: ZoomOSCMessage) {
     //        For now issue a /list command each time someone joins the meeting
     sendToZoom('/zoom/list');
 
-    // console.log("DEBUG: handleOnline message, person", message, person);
+    // console.log("DEBUG: handleOnline message, person", message, person, myName, myZoomID[0] );
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
@@ -1247,26 +1319,35 @@ function handleList(message: ZoomOSCMessage) {
         removeZoomIDFromName(person.userName, person.zoomID);
     }
 
-    // FIXME: Figure out whoami
-    // if (message.address == "/zoomosc/me/list") {
-    //     myName = message.userName;
-    //     myZoomID[0] = message.zoomID;
-    // }
+    // Figure out whoami - This works for the primary device
+    // FIXME - still need to deal with Name => multiple ZoomID's
+    if (primaryMode && (message.address == "/zoomosc/me/list")) {
+        myName = message.userName;
+        myZoomID[0] = message.zoomID;
+    }
 
-    // Send an /xlocal -mirror list command to all members of the ls-support group
-    const supportPCs = state.groups.get(LS_SUPPORT_GRP);
-    if (!primaryMode || !supportPCs) return;
+    // console.log("DEBUG: handleList message, person", message, person, myName, myZoomID[0]);
 
-    supportPCs.forEach((zoomid) => {
+    // Send an /xlocal -mirror list command to all members of the ZOOMOSC_DEVICES group
+    const ZoomOSCDevices = state.groups.get(ZOOMOSC_DEVICES_GRP);
+
+    if (!primaryMode || !ZoomOSCDevices) return;
+
+    ZoomOSCDevices.forEach((zoomid) => {
         const targetPC = state.everyone.get(zoomid);
         sendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${JSON.stringify(message.rawZoomMessage)}`);
     });
 }
 
-function handleMeetingStatus(message: ZoomOSCMessage) {
+async function handleMeetingStatus(message: ZoomOSCMessage) {
     state.names.clear();
     state.groups.clear();
     state.everyone.clear();
+    myName = null;
+    myZoomID = [0, 0]
+
+    // See if anything changes with ZoomOSC
+    sendToZoom('/zoom/ping', "ZoomOSC Information");
 
     sendMessage(null,"handleMeetingStatus", message.targetID);
 
@@ -1274,6 +1355,11 @@ function handleMeetingStatus(message: ZoomOSCMessage) {
     // Note: Normal message parameters don't apply here, use the first parameter.
     if (Number(message.targetID) == 1) {
         sendToZoom('/zoom/list');
+
+        // Try to figure out whoami
+        getWhoami();
+        await sleep(2000);
+        reportInfo();
     }
 }
 
@@ -1290,7 +1376,7 @@ function handlePongReply(message: ZoomOSCMessage) {
         isPro: message.isPro
     }
 
-    console.log("ZoomOSC Information", ZoomOSCInfo);
+    // console.log("DEBUG: handlePongReply: ZoomOSC Information", ZoomOSCInfo);
 }
 
 
@@ -1298,7 +1384,7 @@ function setupOscListeners() {
 
     // convenient code to print every incoming messagse
     // osc.on('*', message => {
-    //    console.log("OSC * Message", message)
+    //   console.log("OSC * Message", message)
     // });
 
     osc.on('/zoomosc/meetingStatus', async message => handleMeetingStatus(parseZoomOSCMessage(message)));
