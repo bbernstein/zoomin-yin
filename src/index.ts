@@ -380,7 +380,7 @@ async function run() {
     sendToZoom('/zoom/ping', "ZoomOSC Information");
     await sleep(2000);
 
-    // If running ZoomOSC PRO, the operated in Primary mode
+    // If running ZoomOSC PRO, then operate in Primary mode
     if (ZoomOSCInfo) {
         primaryMode = ZoomOSCInfo.isPro;
     } else {
@@ -407,19 +407,24 @@ async function run() {
 
     // Try to figure out whoami
     await getWhoami();
-    reportInfo();
 }
 
 async function getWhoami() {
-    if (!primaryMode) {
+    if (primaryMode) {
+        // /list command will update myZoomID
+        sendToZoom('/zoom/list');
+        await sleep(2000);
+    } else {
+        // Ask the Primary user whoami
         sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
 
-        //FIXME: This delay doesn't appear to work.  
         await sleep(2000);
         if (myName) {
             sendToZoom('/zoom/list');
         }
     }
+
+    reportInfo();
 }
 
 function reportInfo() {
@@ -824,7 +829,8 @@ function displayGroup(recipientZoomID: number, param: string) {
         return;
     }
 
-    let buffer = "/grp " + param;
+    // FIXME: For now - Added ": " prefix to response to so the Primary won't interpret the message as a command
+    let buffer = ": /grp " + param;
     members.forEach((zoomid) => {
         if (zoomid == SKIP_PC) {
             buffer = buffer.concat(" " + SKIP_PC_STRING);
@@ -1207,7 +1213,7 @@ function removeZoomIDFromName(name: string, zoomID: number) {
         console.log(`does ${ id } == ${ zoomID }?`)
         return id !== zoomID;
     });
-    // shortcut
+    // FIXME: shortcut
     //const newZoomIDs = zoomIDs.filter(id => id !== zoomID);
     if (newZoomIDs.length === 0) {
         // nothing left, remove the whole thing
@@ -1254,7 +1260,7 @@ function handleOnline(message: ZoomOSCMessage) {
     addZoomIDToName(message.userName, message.zoomID);
 
     // Figure out whoami - This works for both primary and secondary, script must be running before meeting starts
-    //                     Role will not be updated until after the forst /list command mirros the full state
+    //                     In secondary, role will not be updated until after the first /list command mirrors the full state
     if (message.address == "/zoomosc/me/online") {
         myName = message.userName;
         myZoomID = message.zoomID;
@@ -1346,14 +1352,10 @@ async function handleMeetingStatus(message: ZoomOSCMessage) {
 
     sendMessage(null,"handleMeetingStatus", message.targetID);
 
-    // When meeting starts - ask for snapshot of the users who were there first
+    // When meeting starts - Try to figure out whoami
     // Note: Normal message parameters don't apply here, use the first parameter.
     if (Number(message.targetID) == 1) {
-        sendToZoom('/zoom/list');
-
-        // Try to figure out whoami
         await getWhoami();
-        reportInfo();
     }
 }
 
