@@ -1257,7 +1257,7 @@ function handleOnline(message: ZoomOSCMessage) {
     //                     Role will not be updated until after the forst /list command mirros the full state
     if (message.address == "/zoomosc/me/online") {
         myName = message.userName;
-        myZoomID[0] = message.zoomID;
+        myZoomID = message.zoomID;
     }
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
@@ -1319,7 +1319,7 @@ function handleList(message: ZoomOSCMessage) {
     // Figure out whoami - This works for the primary device
     if (primaryMode && (message.address == "/zoomosc/me/list")) {
         myName = message.userName;
-        myZoomID[0] = message.zoomID;
+        myZoomID = message.zoomID;
     }
 
     // console.log("DEBUG: handleList message, person", message, person, myName, myZoomID);
