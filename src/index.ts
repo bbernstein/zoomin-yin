@@ -63,7 +63,7 @@ const fakeNow = null;
 
 let primaryMode = true;
 let myName = "";
-let myZoomID: Number[] = [0, 0];
+let myZoomID: Number = 0;
 
 // The definition of the current state of the room
 interface RoomState {
@@ -406,8 +406,7 @@ async function run() {
     } 
 
     // Try to figure out whoami
-    getWhoami();
-    await sleep(2000);
+    await getWhoami();
     reportInfo();
 }
 
@@ -426,7 +425,7 @@ async function getWhoami() {
 function reportInfo() {
     sendMessage(null, `--------------------------------------------------------------------------------`);
     if (ZoomOSCInfo && ZoomOSCInfo.callStatus) {
-        sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode as User: "${myName}", ZoomID: ${myZoomID[0]}`);
+        sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode as User: "${myName}", ZoomID: ${myZoomID}`);
     } else {
         sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode - Meeting is not in progress`);
     }
@@ -950,10 +949,10 @@ function setPin(recipientZoomID: number, params: string[]) {
             sendMessage(recipientZoomID, `setPin: Error - User "${ person.zoomID }" does not exist`);
         } else {
 
-            // console.log("DEBUG: targetPC.zoomID", targetPC.zoomID, myZoomID[0]);
+            // console.log("DEBUG: targetPC.zoomID", targetPC.zoomID, myZoomID);
 
             // Check if I'm the target
-            if (targetPC.zoomID == myZoomID[0]) {
+            if (targetPC.zoomID == myZoomID) {
                 // FIXME: Prefer to use zoomID instead of userName, but ZoomOSC doesn't appear to work properly
                 //        For some reason, it works for multi-pinning
                 sendToZoom("/zoom/userName/pin2", name);
@@ -1083,7 +1082,7 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
     
     // Make sure this is the targetPC
     // FIXME: Figure out how to allow /execute local before we know whoami
-    if (!primaryMode || (Number(params[1]) == myZoomID[0])) {
+    if (!primaryMode || (Number(params[1]) == myZoomID)) {
 
         // Sub-command to mirror the result of the /zoomosc/list command that was executed on the primary script
         //        /xlocal targetPC.zoomID -mirrorlist <original /list command>`);
@@ -1108,9 +1107,8 @@ function executeLocal(message: ZoomOSCMessage, params: string[]) {
 
             const parsedMessage = parseZoomOSCMessage(newMessage);
 
-            // FIXME - still need to deal with Name => multiple ZoomID's
             myName = parsedMessage.userName;
-            myZoomID[0] = parsedMessage.zoomID;
+            myZoomID = parsedMessage.zoomID;
 
             return;
         }
@@ -1232,7 +1230,7 @@ function handleNameChanged(message: ZoomOSCMessage) {
     person.userName = message.userName;
 
     // Check if myName needs to be updated
-    if (message.zoomID == myZoomID[0]) {
+    if (message.zoomID == myZoomID) {
         myName = message.userName;
     }
 
@@ -1257,7 +1255,6 @@ function handleOnline(message: ZoomOSCMessage) {
 
     // Figure out whoami - This works for both primary and secondary, script must be running before meeting starts
     //                     Role will not be updated until after the forst /list command mirros the full state
-    // FIXME - still need to deal with Name => multiple ZoomID's
     if (message.address == "/zoomosc/me/online") {
         myName = message.userName;
         myZoomID[0] = message.zoomID;
@@ -1273,7 +1270,7 @@ function handleOnline(message: ZoomOSCMessage) {
     //        For now issue a /list command each time someone joins the meeting
     sendToZoom('/zoom/list');
 
-    // console.log("DEBUG: handleOnline message, person", message, person, myName, myZoomID[0] );
+    // console.log("DEBUG: handleOnline message, person", message, person, myName, myZoomID );
 }
 
 // FIXME: ZoomOSC is not issuing the offline command yet
@@ -1320,13 +1317,12 @@ function handleList(message: ZoomOSCMessage) {
     }
 
     // Figure out whoami - This works for the primary device
-    // FIXME - still need to deal with Name => multiple ZoomID's
     if (primaryMode && (message.address == "/zoomosc/me/list")) {
         myName = message.userName;
         myZoomID[0] = message.zoomID;
     }
 
-    // console.log("DEBUG: handleList message, person", message, person, myName, myZoomID[0]);
+    // console.log("DEBUG: handleList message, person", message, person, myName, myZoomID);
 
     // Send an /xlocal -mirror list command to all members of the ZOOMOSC_DEVICES group
     const ZoomOSCDevices = state.groups.get(ZOOMOSC_DEVICES_GRP);
@@ -1344,7 +1340,6 @@ async function handleMeetingStatus(message: ZoomOSCMessage) {
     state.groups.clear();
     state.everyone.clear();
     myName = null;
-    myZoomID = [0, 0]
 
     // See if anything changes with ZoomOSC
     sendToZoom('/zoom/ping', "ZoomOSC Information");
@@ -1357,8 +1352,7 @@ async function handleMeetingStatus(message: ZoomOSCMessage) {
         sendToZoom('/zoom/list');
 
         // Try to figure out whoami
-        getWhoami();
-        await sleep(2000);
+        await getWhoami();
         reportInfo();
     }
 }
