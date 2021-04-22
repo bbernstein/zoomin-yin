@@ -62,8 +62,8 @@ const fakeNow = null;
 
 
 let primaryMode = true;
-let myName = "";
-let myZoomID: Number = 0;
+let myName = null;
+let myZoomID: Number = null;
 
 // The definition of the current state of the room
 interface RoomState {
@@ -365,30 +365,33 @@ function nextMeeting(meetings: MeetingConfig[]): MeetingConfig {
 }
 
 async function run() {
+    let initialCallStatus = null;
 
     // prepare to listen to OSC
     setupOscListeners();
 
     // start listening
     osc.open();
-    sendMessage(null,`Listening to ${ osc.options.plugin.options.open.host }:${ osc.options.plugin.options.open.port }`);
+    sendMessage(null, `Listening to ${osc.options.plugin.options.open.host}:${osc.options.plugin.options.open.port}`);
+
+    // FIXME: Clean this up
+    // Get ZoomOSCInfo
+    // If the ZoomOSC is running locally the /pong response will be available pretty quickly.  If not, poll until it is
+    // Note: There is nothing else to do until the operating mode is known
+    sendToZoom('/zoom/ping', "ZoomOSC Information");
+    await sleep(1000); 
+    while (!ZoomOSCInfo) {
+        sendToZoom('/zoom/ping', "ZoomOSC Information");
+        await sleep(5000);
+    }
 
     // tell ZoomOSC to listen to updates about the users
-    sendToZoom('/zoom/subscribe', 2);
-
-    // get ZoomOSCInfo
-    sendToZoom('/zoom/ping', "ZoomOSC Information");
-    await sleep(2000);
+    // FIXME: This is not reliable if ZoomOSC is configued with "Subscribe to: = None"
+    // sendToZoom('/zoom/subscribe', 2);
 
     // If running ZoomOSC PRO, then operate in Primary mode
-    if (ZoomOSCInfo) {
-        primaryMode = ZoomOSCInfo.isPro;
-    } else {
-        primaryMode = false;
-        sendMessage(null, `----------------------------------------------------------------------`);
-        sendMessage(null, `Warning: Can't communicate with ZoomOSC`);
-        sendMessage(null, `----------------------------------------------------------------------`);
-    }
+    primaryMode = ZoomOSCInfo.isPro;
+    initialCallStatus = ZoomOSCInfo.callStatus;
 
     // read the config file and start/join the current meeting (if not already started)
     if (primaryMode) {
@@ -407,27 +410,42 @@ async function run() {
 
     // Try to figure out whoami
     await getWhoami();
+
+    // This covers the case where the meeting is in progress and this script was restarted. 
+    // Let everyone know in the mmeting that the Primary was restarted and they should send /whoami
+    // so oscdevices can be restored.  
+    // Everyone needs to be asked, because the Primary no longer knows who is running ZoomOSC
+    if (primaryMode && initialCallStatus) {
+        sendToZoom('/zoom/all/chat', `/primaryrestarted`);
+    }
 }
 
 async function getWhoami() {
+
+    await sleep(2000);
+
     if (primaryMode) {
         // /list command will update myZoomID
         sendToZoom('/zoom/list');
         await sleep(2000);
     } else {
         // Ask the Primary user whoami
+        // If the Primary is online, the /list response will update the myZoomID fairly quickly, If not, poll until it is.
+        // There is nothing else to do until whoami is known
         sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
-
         await sleep(2000);
-        if (myName) {
-            sendToZoom('/zoom/list');
+        while (!myZoomID) {
+            sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
+            await sleep(5000);
         }
+        // Update the state
+        sendToZoom('/zoom/list');
     }
 
-    reportInfo();
+    reportZoomOSCInfo();
 }
 
-function reportInfo() {
+function reportZoomOSCInfo() {
     sendMessage(null, `--------------------------------------------------------------------------------`);
     if (ZoomOSCInfo && ZoomOSCInfo.callStatus) {
         sendMessage(null, `Running in ${primaryMode ? "Primary" : "Secondary"} mode as User: "${myName}", ZoomID: ${myZoomID}`);
@@ -603,9 +621,9 @@ function handleChatCommand(message: ZoomOSCMessage) {
 
     const params = wordify(chatMessage);
 
-    // Only /xlocal & /state commands are allowed in Secondary mode
-    // Note: The /state command will not work until a list command is issued on the primary device
-    if (!primaryMode && !((params[0] == "/xlocal") || (params[0] == "/state"))) {
+    // Only /xlocal, /state and /primaryrestarted commands are allowed in Secondary mode
+    // Note: The /sfrestartedtate command will not work until a list command is issued on the primary device
+    if (!primaryMode && !((params[0] == "/xlocal") || (params[0] == "/state") || (params[0] == "/primaryrestarted"))) {
         return;
     }
 
@@ -713,7 +731,7 @@ function processSpecial(message: ZoomOSCMessage, params: string[]): boolean {
             }
             break;
         case '/state':   // Display full state on console
-            reportInfo();
+            reportZoomOSCInfo();
             sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
             sendMessage(null, `\n state:`, state);
             break;
@@ -727,6 +745,14 @@ function processSpecial(message: ZoomOSCMessage, params: string[]): boolean {
             // Add User to ZoomOSCDevices
             createGroup(recipientZoomID, ["/grp", "-add", ZOOMOSC_DEVICES_GRP, message.userName], ADDTOGRP);
             break;
+        case '/primaryrestarted':
+            if (!primaryMode) {
+                // This was sent out to everyone in desperation. 
+                // I know whoami, but the Primary no longer knows I exist as a secondary
+                sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
+            }
+            break;
+
         default:
             specialCommand = false;
     }
@@ -1346,11 +1372,12 @@ async function handleMeetingStatus(message: ZoomOSCMessage) {
     state.groups.clear();
     state.everyone.clear();
     myName = null;
+    myZoomID = null;
+
+    sendMessage(null, "handleMeetingStatus", message.targetID);
 
     // See if anything changes with ZoomOSC
     sendToZoom('/zoom/ping', "ZoomOSC Information");
-
-    sendMessage(null,"handleMeetingStatus", message.targetID);
 
     // When meeting starts - Try to figure out whoami
     // Note: Normal message parameters don't apply here, use the first parameter.
@@ -1372,9 +1399,8 @@ function handlePongReply(message: ZoomOSCMessage) {
         isPro: message.isPro
     }
 
-    // console.log("DEBUG: handlePongReply: ZoomOSC Information", ZoomOSCInfo);
+    console.log("handlePongReply: ZoomOSC Information", ZoomOSCInfo);
 }
-
 
 function setupOscListeners() {
 
