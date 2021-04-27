@@ -143,6 +143,7 @@ interface MeetingConfig {
     meetingID: string;
     meetingPass?: string;
     userName?: string;
+    coHosts?: string[];
     date?: string;
     time?: string;
     duration?: string;
@@ -408,15 +409,21 @@ async function run() {
         await checkForUpdates();
     } 
 
-    // Try to figure out whoami
-    await getWhoami();
+    // Ignore meetings started by checkForUpdates
+    if (!initialCallStatus) return;
 
     // This covers the case where the meeting is in progress and this script was restarted. 
-    // Let everyone know in the mmeting that the Primary was restarted and they should send /whoami
-    // so oscdevices can be restored.  
-    // Everyone needs to be asked, because the Primary no longer knows who is running ZoomOSC
-    if (primaryMode && initialCallStatus) {
-        sendToZoom('/zoom/all/chat', `/primaryrestarted`);
+    if (primaryMode) {
+        // Let everyone know in the meeting that the Primary was restarted and they should send /whoami
+        // so oscdevices can be restored.  
+        // Everyone needs to be asked, because the Primary no longer knows who is running ZoomOSC
+        if (ZoomOSCInfo.numUsers > 1) {
+            sendToZoom('/zoom/list');
+            await sleep(2000);
+            sendToZoom('/zoom/all/chat', `/primaryrestarted`);
+        }
+    } else {
+        await getWhoami();
     }
 }
 
@@ -433,8 +440,9 @@ async function getWhoami() {
         // If the Primary is online, the /list response will update the myZoomID fairly quickly, If not, poll until it is.
         // There is nothing else to do until whoami is known
         sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
+        sendToZoom('/zoom/ping', "ZoomOSC Information");
         await sleep(2000);
-        while (!myZoomID) {
+        while (!myZoomID && ZoomOSCInfo.callStatus) {
             sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
             await sleep(5000);
         }
@@ -507,13 +515,22 @@ async function checkForUpdates() {
             const endtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
 
             if (ZoomOSCInfo.isPro && isHost(zoomid)) {
-                sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning <minutes> command`);
+                sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning <min> <code> command`);
             }
         });
 
         // FIXME: Replace above code 
         // state.everyone.filter(person => {...  return (ZoomOSCInfo.isPro && isHost(person.zoomID) ) })
         //     .forEach(person => { sendMessage(...) });
+    }
+
+    if (gCurrentMeetingConfig && gCurrentMeetingConfig.coHosts) {
+        gCurrentMeetingConfig.coHosts.forEach(name => {
+            const person = getPeopleFromName(name);
+            // Make this person a cohost if not already one
+            if (!person || isHost(person[0].zoomID)) return;
+            sendToZoom('/zoom/userName/makeCoHost', name);
+        });
     }
 
     // check again after the specified poll time
@@ -620,17 +637,8 @@ function handleChatCommand(message: ZoomOSCMessage) {
     // console.log("DEBUG: handleChatCommand message", message);
 
     const params = wordify(chatMessage);
-
-    // Only /xlocal, /state and /primaryrestarted commands are allowed in Secondary mode
-    // Note: The /sfrestartedtate command will not work until a list command is issued on the primary device
-    if (!primaryMode && !((params[0] == "/xlocal") || (params[0] == "/state") || (params[0] == "/primaryrestarted"))) {
-        return;
-    }
-
     // Process special commands
-    if (processSpecial(message, params)) {
-        return;
-    }
+    if (processSpecial(message, params)) return;
 
     // only deal with chat messages from a host, else exit
     if (!isHost(message.zoomID)) {
@@ -641,52 +649,83 @@ function handleChatCommand(message: ZoomOSCMessage) {
     // slash-command, do something with it
     switch (params[0]) {
         case '/mx':  // mute all except members of group - No option => use LS_SUPPORT_GRP
+            if (!primaryMode) return;
             muteAllExceptGroup(message, params);
             break;
         case '/ua': // unmute all
+            if (!primaryMode) return;
             sendToZoom('/zoom/all/unMute');
             break;
         case '/ma': // mute all
+            if (!primaryMode) return;
             sendToZoom('/zoom/all/mute');
             break;
         case '/m':  // mute group
         case '/mute':
+            if (!primaryMode) return;
             muteGroup(message, params);
             break;
         case '/u':  // unmute group
         case '/unmute':
+            if (!primaryMode) return;
             unmuteGroup(message, params);
             break;
         case '/g':
         case '/grp':
         case '/grps':
         case '/group': // create or list groups
+            if (!primaryMode) return;
             manageGroups(message.zoomID, params);
             break;
         case '/p':
         case '/pin': // pin to second monitors (Must have a group called "ls-support")
+            if (!primaryMode) return;
             setPin(message.zoomID, params);
             break;
         case '/mp':
         case '/mpin':     // multipin to monitor (Must have a group called "ls-support")
         case '/multipin': // Can only multipin to a device running ZoomOSC PRO
+            if (!primaryMode) return;
             setMultiPin(message.zoomID, params);
             break;
         case '/names':    // Display the current list of users
             displayAllNames(message.zoomID);
             break;
         case '/list':     // initiate a /list command
+            if (!primaryMode) return;
             sendToZoom('/zoom/list');
             break;
+        case '/kr':
         case '/keeprunning':
-            keepRunning(message.zoomID, params);
+            if (!primaryMode) return;
+            if (checkPassword(message.zoomID, params.slice(2))) {
+                 keepRunning(message.zoomID, params);
+            }
             break;
         case '/xremote':
             executeRemote(message, params);
             break;
         case '/test':
             // console.log("quicktest host", params[1]);
-            sendToZoom('/zoom/list');
+            // sendToZoom('/zoom/list');
+            break;
+        case '/reset':
+            // FIXME: This will not work on the secondary until we support passing the codeword from the primary to the secondary
+            if (checkPassword(message.zoomID, params.slice(1))) {
+                state.names.clear();
+                state.groups.clear();
+                state.everyone.clear();
+                sendToZoom('/zoom/list');
+            }
+            break;
+        case '/end':
+            if (!primaryMode) return;
+            if (checkPassword(message.zoomID, params.slice(1))) {
+                 if (!ZoomOSCInfo.isPro) {
+                     sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
+                 }
+                 sendToZoom("/zoom/endMeeting");
+             }
             break;
         default:
             sendMessage(message.zoomID, "Error: Unimplemented Chat Command");
@@ -698,59 +737,48 @@ function processSpecial(message: ZoomOSCMessage, params: string[]): boolean {
     const recipientZoomID = message.zoomID;
 
     switch (params[0]) {
-
-        case '/cohost':
-            if (checkPassword(recipientZoomID, params.slice(2))) {
-                //check if person exists
-                const personExists = getPeopleFromName(params[1]);
-                if (!personExists) {
-                    sendMessage(recipientZoomID, `processSpecial: Error - User "${ params[1] }" does not exist`);
-                } else {
-                    sendToZoom('/zoom/userName/makeCoHost', params[1]);
-                }
-            }
-            break;
-        case '/reset':
-            if (checkPassword(recipientZoomID, params.slice(1))) {
-                state.names.clear();
-                state.groups.clear();
-                state.everyone.clear();
-                sendToZoom('/zoom/list');
-            }
-            break;
-        case '/end':
-            if (!isHost(recipientZoomID)) {
-                sendMessage(recipientZoomID, "Error: Only the Host and Co-hosts can issue Chat Commands");
-            } else {
-                if (checkPassword(recipientZoomID, params.slice(1))) {
-                    if (!ZoomOSCInfo.isPro) {
-                        sendMessage(null, "Error: Unable to stop meeting - Must be running ZoomOSC Pro");
-                    }
-                    sendToZoom("/zoom/endMeeting");
-                }
-            }
-            break;
+        // These special commands can be executed on the Primary and Secondary
         case '/state':   // Display full state on console
             reportZoomOSCInfo();
             sendMessage(null, `Current Meeting:`, gCurrentMeetingConfig);
             sendMessage(null, `\n state:`, state);
             break;
-        case '/xlocal':
+        case '/xlocal':               // FIXME: This command should be protected with a passcode
             executeLocal(message, params);
             break;
+
+        // These special commands can only be executed on the Primary
+        case '/cohost':
+            if (!primaryMode) return (specialCommand);
+            if (checkPassword(recipientZoomID, params.slice(2))) {
+                //check if person exists
+                const personExists = getPeopleFromName(params[1]);
+                if (!personExists) {
+                    sendMessage(recipientZoomID, `processSpecial: Error - User "${params[1]}" does not exist`);
+                } else {
+                    sendToZoom('/zoom/userName/makeCoHost', params[1]);
+                }
+            }
+            break;
         case '/whoami':
+            if (!primaryMode) return (specialCommand);
             sendMessage(recipientZoomID, `Whoami: ${message.userName} ${message.zoomID}`);
             sendToZoom('/zoom/zoomID/chat', recipientZoomID, `/xlocal "${message.userName}" -whoami ${JSON.stringify(message.rawZoomMessage)}`);
 
             // Add User to ZoomOSCDevices
             createGroup(recipientZoomID, ["/grp", "-add", ZOOMOSC_DEVICES_GRP, message.userName], ADDTOGRP);
             break;
+
+        // This special command can only be executed on the Seconday
         case '/primaryrestarted':
-            if (!primaryMode) {
-                // This was sent out to everyone in desperation. 
-                // I know whoami, but the Primary no longer knows I exist as a secondary
-                sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
-            }
+            if (primaryMode) return (specialCommand);
+            // This was sent out to everyone in desperation. 
+            // I know whoami, but the Primary no longer knows I exist as a secondary
+            // FIXME: ZoomOSC is not sending offline messages when users leave the meeting. Clear the state for now. 
+            state.names.clear();
+            state.groups.clear();
+            state.everyone.clear();
+            sendToZoom('/zoom/userName/chat', PRIMARY_USER, `/whoami`);
             break;
 
         default:
@@ -764,18 +792,18 @@ function checkPassword(recipientZoomID: number, params: string[]): boolean {
     console.log()
     if (!gCurrentMeetingConfig && !gDefaultCodeWord) {
 
-        sendMessage(recipientZoomID, `Error - This meeting is not configured for special command processing`);
+        sendMessage(recipientZoomID, `Error - This meeting is not configured with a codeword`);
         return (passwordValid);
     }
 
     if (!params[0]) {
-        sendMessage(recipientZoomID, `Error - Password required for this command`);
+        sendMessage(recipientZoomID, `Error - Codeword required for this command`);
         return (passwordValid);
     }
 
     if (( gCurrentMeetingConfig && (params[0] !== gCurrentMeetingConfig.codeWord)) ||
         (!gCurrentMeetingConfig && (params[0] !== gDefaultCodeWord)) ) {
-        sendMessage(recipientZoomID, `Error - Invalid Password`);
+        sendMessage(recipientZoomID, `Error - Invalid Codeword`);
         return (passwordValid);
     }
     passwordValid = true;
@@ -810,7 +838,7 @@ function createGroup(recipientZoomID: number, params: string[], addtogroup: bool
         // Check if this user is already in the group
         // FIXME: This currently only works for one name being added - Should be able to modify the code below with a filter
         const people = getPeopleFromName(params[3]);
-         if (people) {
+        if (people) {
             if (zoomidList.indexOf(people[0].zoomID) > -1) return;
         }
     }
@@ -1160,7 +1188,13 @@ function keepRunning(recipientZoomID: number, params: string[]) {
     gCurrentMeetingConfig.maxEndDateTime = gCurrentMeetingConfig.maxEndDateTime.plusMinutes(minutestoadd);
     const newEndtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
 
-    sendMessage(recipientZoomID, `New endtime = "${newEndtime}"`);
+    // Let the host and co-hosts know what the meeting end time is
+    state.everyone.forEach(person => {
+        const zoomid = person.zoomID;
+        if (ZoomOSCInfo.isPro && isHost(zoomid)) {
+            sendMessage(zoomid, `New meeting endtime = "${newEndtime}"`);
+        }
+    });
 }
 
 // This changes curly quotes and strange line-endings to plain ascii versions
@@ -1213,6 +1247,7 @@ function handleRoleChanged(message: ZoomOSCMessage) {
     const person = state.everyone.get(message.zoomID);
     if (!person) return;
     person.userRole = Number(message.params[0]);
+
     // console.log("DEBUG: handleRoleChanged message, person", message, person);
 }
 
@@ -1378,6 +1413,7 @@ async function handleMeetingStatus(message: ZoomOSCMessage) {
 
     // See if anything changes with ZoomOSC
     sendToZoom('/zoom/ping', "ZoomOSC Information");
+    await sleep(2000);
 
     // When meeting starts - Try to figure out whoami
     // Note: Normal message parameters don't apply here, use the first parameter.
