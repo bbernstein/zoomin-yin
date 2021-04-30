@@ -85,6 +85,7 @@ interface PersonState {
     onlineStatus: boolean;
     videoOn: boolean;
     audioOn: boolean;
+    visited: boolean;
 }
 
 // The ZoomOSC incoming user message with params broken out
@@ -509,21 +510,11 @@ async function checkForUpdates() {
 
     // Starting ~5 minutes before the MaxDuration, send warnings to the host and co-hosts that the meeting will end 
     if (gCurrentMeetingConfig && (now.isAfter(gCurrentMeetingConfig.maxEndDateTime.minusMinutes(ENDOFMEETING_WARNING_WINDOW)))) {
-
-        state.everyone.forEach(person => {
-            const zoomid = person.zoomID;
-            const endtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
-
-            if (ZoomOSCInfo.isPro && isHost(zoomid)) {
-                sendMessage(zoomid, `Warning: The meeting will be terminated at approximately: ${endtime}\nTo prevent this from happening, send the /keeprunning <min> <code> command`);
-            }
-        });
-
-        // FIXME: Replace above code 
-        // state.everyone.filter(person => {...  return (ZoomOSCInfo.isPro && isHost(person.zoomID) ) })
-        //     .forEach(person => { sendMessage(...) });
+        const endtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
+        sendMessageToHosts(`Warning: The meeting will be terminated at approximately: ${endtime}\nTo extended the endtime, use the /keeprunning <min> <code> command`);
     }
 
+    // Make users cohost based on the meeting config
     if (gCurrentMeetingConfig && gCurrentMeetingConfig.coHosts) {
         gCurrentMeetingConfig.coHosts.forEach(name => {
             const person = getPeopleFromName(name);
@@ -532,6 +523,68 @@ async function checkForUpdates() {
             sendToZoom('/zoom/userName/makeCoHost', name);
         });
     }
+
+    // Issue Warning if a user name is associated with multiple ZoomID's
+    // FIXME:  Most of these are due to ZoomOSC not issuing an offline message
+    state.names
+        .forEach((memberZoomIDs, Name) => {
+            const members = state.names.get(Name);
+            if (!members) {
+                sendMessageToHosts(`Error: User "${Name}" no longer exists`);
+                return;
+            }
+            if (members.length > 1) {
+                sendMessageToHosts(`Warning: User "${Name}" is associated with more than one ZoomID.`);
+
+                // Display groups that this Name is a member of
+                members.forEach(member => {
+                    state.groups.forEach((groupMemberZoomIDs, groupName) => {
+                        const groupmembers = state.groups.get(groupName);
+                        if (groupmembers.includes(member)) {
+                            sendMessageToHosts(`Warning: User "${Name}" (${member}) is a member of group "${groupName}"`);
+                        }
+                    })
+                })
+            }
+        })
+
+    // FIXME: ZoomOSC doesn't send offline messages. Check if a member is no longer part of the meeting
+    let personToRemove: PersonState;
+    let memberOfGroup = false;
+    state.everyone.forEach(person => {
+        if (!person) return;
+
+        // Issue a warning if the visited flag has not been set since the last iteration.
+        if (!person.visited) {
+            const Name = person.userName;
+
+            // Display groups that this person is a member of
+            state.groups.forEach((groupMemberZoomIDs, groupName) => {
+                const groupmembers = state.groups.get(groupName);
+                if (groupmembers.includes(person.zoomID)) {
+                    sendMessageToHosts(`Warning: User "${Name}" (${person.zoomID}) is no longer online and was a member of group "${groupName}"\nUse /cu "${Name}" command to manually clear the user.`);
+                    memberOfGroup = true;
+                } else {
+                    // Since member is not part of a group it is safe to remove them 
+                    personToRemove = person;
+                }
+            })
+        }
+
+        // Get ready for the next iteration
+        person.visited = false;
+        state.everyone.set(person.zoomID, person);
+    })
+
+    // If the member is not part of a group remove them from the state.
+    if (!memberOfGroup && personToRemove) {
+        // FIXME: 
+        // sendMessageToHosts(`Warning: Removing Member "${personToRemove.userName}" (${personToRemove.zoomID}) from the state.`);
+        state.everyone.delete(personToRemove.zoomID);
+        state.names.delete(personToRemove.userName);
+    }
+    // Send a list command to identify the online members
+    silentlySendToZoom('/zoom/list');
 
     // check again after the specified poll time
     setTimeout(checkForUpdates, CONFIG_POLL_TIME);
@@ -546,6 +599,15 @@ function sendToZoom(message: string, ...args: any[]) {
     }
 }
 
+function silentlySendToZoom(message: string, ...args: any[]) {
+    try {
+        osc.send(new OSC.Message(message, ...args));
+    } catch (e) {
+        console.error("Failed to sendToZoom", e);
+    }
+}
+
+
 function sendMessage(recipientZoomID: number, message: string, ...args: any[]) {
     const today = getNow().toLocaleString().substring(0, 19)
         .replace(/T/g, " ");
@@ -555,6 +617,27 @@ function sendMessage(recipientZoomID: number, message: string, ...args: any[]) {
     if (!recipientZoomID) return;
 
     sendToZoom('/zoom/zoomID/chat', recipientZoomID, message, ...args);
+}
+
+function sendMessageToHosts(message: string, ...args: any[]) {
+
+    const today = getNow().toLocaleString().substring(0, 19)
+        .replace(/T/g, " ");
+
+    console.log(today, message, ...args);
+
+    state.everyone.forEach(person => {
+        const zoomid = person.zoomID;
+    
+        if (ZoomOSCInfo.isPro && isHost(zoomid)) {
+            // sendMessage(zoomid, message, ...args);
+            silentlySendToZoom('/zoom/zoomID/chat', zoomid, message, ...args);
+        }
+    });
+
+    // FIXME: Replace above code 
+    // state.everyone.filter(person => {...  return (ZoomOSCInfo.isPro && isHost(person.zoomID) ) })
+    //     .forEach(person => { sendMessage(...) });
 }
 
 /**
@@ -701,6 +784,10 @@ function handleChatCommand(message: ZoomOSCMessage) {
             if (checkPassword(message.zoomID, params.slice(2))) {
                  keepRunning(message.zoomID, params);
             }
+            break;
+        case '/cu':
+        case '/clearuser':
+            clearUser(message.zoomID, params);
             break;
         case '/xremote':
             executeRemote(message, params);
@@ -860,7 +947,7 @@ function createGroup(recipientZoomID: number, params: string[], addtogroup: bool
 
     // Update the state on all secondary PC's
     if ( groupName == ZOOMOSC_DEVICES_GRP) {
-        sendToZoom('/zoom/list');
+        silentlySendToZoom('/zoom/list');
     }
 }
 
@@ -1189,12 +1276,30 @@ function keepRunning(recipientZoomID: number, params: string[]) {
     const newEndtime = gCurrentMeetingConfig.maxEndDateTime.format(DateTimeFormatter.ofPattern('hh:mm'));
 
     // Let the host and co-hosts know what the meeting end time is
-    state.everyone.forEach(person => {
-        const zoomid = person.zoomID;
-        if (ZoomOSCInfo.isPro && isHost(zoomid)) {
-            sendMessage(zoomid, `New meeting endtime = "${newEndtime}"`);
-        }
-    });
+    sendMessageToHosts(`New meeting endtime = "${newEndtime}"`);
+}
+
+// Remove an individual server from the state
+// Don't change the groups, just mention that they should be updated. 
+function clearUser(recipientZoomID: number, params: string[]) {
+    const name = params[1];
+    const zoomIDs: number[] = state.names.get(name);
+
+    if (zoomIDs) {
+
+        sendMessage(recipientZoomID, `Clearing User "${name}" (${zoomIDs})`);
+
+        // Display groups that this person is a member of
+        state.groups.forEach((groupMemberZoomIDs, groupName) => {
+            const groupmembers = state.groups.get(groupName);
+            if (groupmembers.includes(zoomIDs[0])) {
+                sendMessage(recipientZoomID, `"${name}" (${zoomIDs}) is a member of group "${groupName}"\nGroup "${groupName}" should be reloaded`);
+            }
+        })
+
+        state.everyone.delete(zoomIDs[0]);
+        state.names.delete(name);
+    }
 }
 
 // This changes curly quotes and strange line-endings to plain ascii versions
@@ -1270,12 +1375,13 @@ function removeZoomIDFromName(name: string, zoomID: number) {
     if (!zoomIDs) return;
 
     // example of how to call a function inside a filter
-    const newZoomIDs = zoomIDs.filter((id) => {
-        console.log(`does ${ id } == ${ zoomID }?`)
-        return id !== zoomID;
-    });
+    // const newZoomIDs = zoomIDs.filter((id) => {
+    //     console.log(`does ${ id } == ${ zoomID }?`)
+    //    return id !== zoomID;
+    // });
     // FIXME: shortcut
-    //const newZoomIDs = zoomIDs.filter(id => id !== zoomID);
+    const newZoomIDs = zoomIDs.filter(id => id !== zoomID);
+
     if (newZoomIDs.length === 0) {
         // nothing left, remove the whole thing
         state.names.delete(name);
@@ -1315,7 +1421,8 @@ function handleOnline(message: ZoomOSCMessage) {
         userRole: USERROLE_NONE,
         onlineStatus: true,
         videoOn: false,
-        audioOn: false
+        audioOn: false,
+        visited: true
     }
     state.everyone.set(person.zoomID, person);
     addZoomIDToName(message.userName, message.zoomID);
@@ -1328,14 +1435,14 @@ function handleOnline(message: ZoomOSCMessage) {
     }
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
-    //        For now manually mute people upon entry after 25 have joined the meeting
-    if (state.names.size > 25) {
+    //        For now manually mute people upon entry after 20 have joined the meeting
+    if (state.names.size > 20) {
         sendToZoom('/zoom/zoomID/mute', person.zoomID);
     }
 
     // FIXME: ZoomOSC is not issuing a /list after a member joins.
     //        For now issue a /list command each time someone joins the meeting
-    sendToZoom('/zoom/list');
+    silentlySendToZoom('/zoom/list');
 
     // console.log("DEBUG: handleOnline message, person", message, person, myName, myZoomID );
 }
@@ -1364,7 +1471,8 @@ function handleList(message: ZoomOSCMessage) {
             userRole: message.userRole,
             onlineStatus: message.onlineStatus,
             videoOn: message.videoStatus,
-            audioOn: message.audioStatus
+            audioOn: message.audioStatus,
+            visited: true
         }
         state.everyone.set(person.zoomID, person);
     } else {
@@ -1373,6 +1481,7 @@ function handleList(message: ZoomOSCMessage) {
         person.onlineStatus = message.onlineStatus;
         person.videoOn = message.videoStatus;
         person.audioOn = message.audioStatus;
+        person.visited = true;
     }
     addZoomIDToName(message.userName, message.zoomID);
 
@@ -1398,7 +1507,7 @@ function handleList(message: ZoomOSCMessage) {
 
     ZoomOSCDevices.forEach((zoomid) => {
         const targetPC = state.everyone.get(zoomid);
-        sendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${JSON.stringify(message.rawZoomMessage)}`);
+        silentlySendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${JSON.stringify(message.rawZoomMessage)}`);
     });
 }
 
