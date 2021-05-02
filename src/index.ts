@@ -48,6 +48,7 @@ const CONFIG_POLL_TIME = 15000;
 const DEFAULT_DURATION = "PT1H";
 const DEFAULT_ADD_MINUTES = 5;
 const ENDOFMEETING_WARNING_WINDOW = 5;    // In minutes
+const DEFAULT_MUTE_UPON_ENTRY = "20"; 
 
 // const SKIP_CURRENT = true;
 // const DONT_SKIP_CURRENT = false;
@@ -145,6 +146,7 @@ interface MeetingConfig {
     meetingPass?: string;
     userName?: string;
     coHosts?: string[];
+    muteUponEntry?: string;
     date?: string;
     time?: string;
     duration?: string;
@@ -315,6 +317,12 @@ function startMeeting(meetingConfig: MeetingConfig) {
 
     // keep this global so we can check its codeword and things like that
     gCurrentMeetingConfig = meetingConfig;
+
+    // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
+    //        For now, manually mute people upon entry after specified number of people have joined the meeting
+    if (!meetingConfig.muteUponEntry) {
+        gCurrentMeetingConfig.muteUponEntry = DEFAULT_MUTE_UPON_ENTRY;
+    }
 
     // Stop trying to start a new meeting until this one has ended.
     disableStartMeeting = true;
@@ -733,11 +741,11 @@ function handleChatCommand(message: ZoomOSCMessage) {
     switch (params[0]) {
         case '/mx':  // mute all except members of group - No option => use LS_SUPPORT_GRP
             if (!primaryMode) return;
-            muteAllExceptGroup(message, params);
+            muteAllExceptGroup(message.zoomID, params);
             break;
-        case '/ua': // unmute all
+        case '/ux': // unmute all except members of group - No option => unmute all with video on
             if (!primaryMode) return;
-            sendToZoom('/zoom/all/unMute');
+            unmuteAllExceptGroup(message.zoomID, params);
             break;
         case '/ma': // mute all
             if (!primaryMode) return;
@@ -1175,7 +1183,7 @@ function setMultiPin(recipientZoomID: number, params: string[]) {
     });
 }
 
-function muteAllExceptGroup(message: ZoomOSCMessage, params: string[]) {
+function muteAllExceptGroup(recipientZoomID: number, params: string[]) {
 
     let group: string;
 
@@ -1183,6 +1191,11 @@ function muteAllExceptGroup(message: ZoomOSCMessage, params: string[]) {
         group = DEFAULT_MX_GRP;
     } else {
         group = params[1];
+    }
+
+    const grpmembers = state.groups.get(group);
+    if (!grpmembers) {
+        sendMessage(recipientZoomID, `muteAllExceptGroup: Group "${group}" does not exist - Muting all users`);
     }
 
     if (!state.groups.get(group)) {
@@ -1196,6 +1209,29 @@ function muteAllExceptGroup(message: ZoomOSCMessage, params: string[]) {
     sendToZoom('/zoom/allExcept/zoomID/mute', ...state.groups.get(group));
 }
 
+function unmuteAllExceptGroup(recipientZoomID: number, params: string[]) {
+    const group = params[1];
+
+    sendMessage(null, `Unmute all except group: ${group}`);
+
+    const groupmembers = state.groups.get(group);
+    if (group && !groupmembers) {
+        sendMessage(recipientZoomID, `unmuteAllExceptGroup: Group "${group}" does not exist - Unmuting all users with video on`);
+    }
+
+    state.everyone.forEach(person => {
+        if (!person) return;
+
+        if (group && groupmembers && groupmembers.includes(person.zoomID)) return;
+
+        // Only unmute users that are muted
+        // To mitigate unmuting people that granted unmute permission, but have their video off, don't unmute.  
+        if (!person.audioOn && person.videoOn ) {
+            silentlySendToZoom('/zoom/zoomID/unMute', person.zoomID);
+        }
+    })
+
+}
 function unmuteGroup(message: ZoomOSCMessage, params: string[]) {
     const curGroup = state.groups.get(params[1]);
     if (!curGroup) return;
@@ -1435,8 +1471,8 @@ function handleOnline(message: ZoomOSCMessage) {
     }
 
     // FIXME: ZoomOSC doesn't support "Mute Participants upon Entry"
-    //        For now manually mute people upon entry after 20 have joined the meeting
-    if (state.names.size > 20) {
+    //        For now, manually mute people upon entry after specified number of people have joined the meeting
+    if (gCurrentMeetingConfig && state.names.size > Number(gCurrentMeetingConfig.muteUponEntry)) {
         sendToZoom('/zoom/zoomID/mute', person.zoomID);
     }
 
@@ -1507,6 +1543,8 @@ function handleList(message: ZoomOSCMessage) {
 
     ZoomOSCDevices.forEach((zoomid) => {
         const targetPC = state.everyone.get(zoomid);
+        // Make sure the user in the ZoomOSCDevices group is still listed in the state
+        if (!targetPC) return;
         silentlySendToZoom('/zoom/zoomID/chat', zoomid, `/xlocal "${targetPC.userName}" -mirrorlist ${JSON.stringify(message.rawZoomMessage)}`);
     });
 }
